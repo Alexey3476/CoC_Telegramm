@@ -7,10 +7,11 @@ from typing import Any
 
 import httpx
 from telegram import Update
-from telegram.constants import ParseMode
+from telegram.constants import ChatType, ParseMode
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 from app.backend_client import fetch_json
+from app.bindings_storage import Binding, BindingsStorage
 from app.settings import settings
 from app.storage import (
     fetch_bindings_for_group,
@@ -117,10 +118,10 @@ async def player(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
         await update.message.reply_text("Usage: /player <tag>")
         return
-    tag = context.args[0]
+    tag = normalize_tag(context.args[0])
     async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
         try:
-            payload = await fetch_json(client, f"/player/{tag}")
+            payload = await fetch_json(client, f"/player/{tag.replace('#', '%23')}")
             await update.message.reply_text(format_player(payload), parse_mode=ParseMode.MARKDOWN)
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
@@ -328,6 +329,8 @@ async def war_reminder_loop(application) -> None:
 async def main() -> None:
     await init_db()
     application = ApplicationBuilder().token(settings.telegram_bot_token).build()
+
+    application.bot_data["storage"] = BindingsStorage(settings.bindings_db_path)
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("clan", clan))
