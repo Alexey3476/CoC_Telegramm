@@ -609,6 +609,7 @@ async def verify_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 member.id,
                 exc,
             )
+            continue
         binding = storage.get_binding(settings.clan_group_id, member.id)
         if not binding:
             try:
