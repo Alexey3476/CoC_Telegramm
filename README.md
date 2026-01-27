@@ -84,7 +84,7 @@ docker compose logs -f
 
 ## Player Bindings & War Reminders
 
-Use these commands inside a private chat with the bot:
+Use these commands inside a private chat with the bot (or press the “Привязать” button shown by `/start`):
 
 - `/bind #PLAYER_TAG`: Link your Telegram account to a Clash of Clans player tag and receive a one-time invite link.
 - `/unbind`: Remove your current binding.

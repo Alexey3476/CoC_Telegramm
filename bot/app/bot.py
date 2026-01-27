@@ -7,9 +7,16 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatType, ParseMode
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    ApplicationBuilder,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 from app.backend_client import build_url, fetch_json
 from app.bindings_storage import Binding, BindingsStorage
@@ -19,6 +26,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message
 logger = logging.getLogger(__name__)
 
 TAG_PATTERN = re.compile(r"^[0289PYLQGRJCUV]+$")
+TAG_EXTRACT_PATTERN = re.compile(r"#?[0289PYLQGRJCUV]{4,}")
 
 
 def format_clan(payload: dict[str, Any]) -> str:
@@ -122,11 +130,51 @@ def ensure_private_chat(update: Update) -> bool:
     return chat is not None and chat.type == ChatType.PRIVATE
 
 
+def bind_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("Привязать", callback_data="bind_start")]]
+    )
+
+
+def bind_cancel_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("Отмена", callback_data="bind_cancel")]]
+    )
+
+
+def extract_tag(text: str) -> str | None:
+    match = TAG_EXTRACT_PATTERN.search(text.replace(" ", "").upper())
+    if not match:
+        return None
+    return match.group(0)
+
+
+async def handle_handler_exception(
+    update: Update | None,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    logger.exception("Unhandled handler error", exc_info=context.error)
+    if update and update.effective_message:
+        await update.effective_message.reply_text(
+            "Unexpected error occurred. Please try again."
+        )
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.message:
+    if not update.message:
+        return
+    try:
+        if ensure_private_chat(update):
+            await update.message.reply_text(
+                "To continue, bind your account.",
+                reply_markup=bind_keyboard(),
+            )
+            return
         await update.message.reply_text(
             "Welcome! Use /clan, /player <tag>, or /war to get Clash of Clans info."
         )
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to handle /start")
 
 
 async def clan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -155,6 +203,9 @@ async def clan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except httpx.RequestError as exc:
             logger.warning("Backend unreachable: %s", exc)
             await update.message.reply_text("Backend is unreachable. Please try again later.")
+        except Exception:  # noqa: BLE001
+            logger.exception("Unhandled error in /clan")
+            await update.message.reply_text("Unexpected error occurred. Please try again.")
 
 
 async def player(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -193,6 +244,9 @@ async def player(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except httpx.RequestError as exc:
             logger.warning("Backend unreachable: %s", exc)
             await update.message.reply_text("Backend is unreachable. Please try again later.")
+        except Exception:  # noqa: BLE001
+            logger.exception("Unhandled error in /player")
+            await update.message.reply_text("Unexpected error occurred. Please try again.")
 
 
 async def war(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -221,18 +275,50 @@ async def war(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except httpx.RequestError as exc:
             logger.warning("Backend unreachable: %s", exc)
             await update.message.reply_text("Backend is unreachable. Please try again later.")
+        except Exception:  # noqa: BLE001
+            logger.exception("Unhandled error in /war")
+            await update.message.reply_text("Unexpected error occurred. Please try again.")
+
+
+async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    try:
+        await update.message.reply_text("pong")
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to reply to /ping")
 
 
 async def bind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.effective_user:
         return
-    if not ensure_private_chat(update):
-        await update.message.reply_text("Please use /bind in a private chat with the bot.")
+    try:
+        if not ensure_private_chat(update):
+            await update.message.reply_text("Please use /bind in a private chat with the bot.")
+            return
+        if not context.args:
+            await update.message.reply_text(
+                "Send your player tag (e.g. #2PRGP0L22).",
+                reply_markup=bind_cancel_keyboard(),
+            )
+            context.user_data["awaiting_tag"] = True
+            return
+        raw_tag = " ".join(context.args)
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to handle /bind")
+        await update.message.reply_text("Unexpected error occurred. Please try again.")
         return
-    if not context.args:
-        await update.message.reply_text("Usage: /bind #PLAYER_TAG")
+    await process_binding(update, context, raw_tag)
+
+
+async def process_binding(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    raw_tag: str,
+) -> None:
+    if not update.effective_user or not update.message:
         return
-    raw_tag = " ".join(context.args)
+    context.user_data["awaiting_tag"] = False
     logger.info(
         "Bind request received user_id=%s group_id=%s raw_tag=%s",
         update.effective_user.id,
@@ -275,6 +361,10 @@ async def bind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except httpx.RequestError as exc:
             logger.warning("Backend unreachable during bind: %s", exc)
             await update.message.reply_text("Backend is unreachable. Please try again later.")
+            return
+        except Exception:  # noqa: BLE001
+            logger.exception("Unhandled error during bind validation")
+            await update.message.reply_text("Unexpected error occurred. Please try again.")
             return
     if settings.enforce_clan_membership:
         if not settings.coc_clan_tag:
@@ -321,6 +411,14 @@ async def bind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
     mention = format_mention(update.effective_user.id, update.effective_user.full_name)
     try:
+        if settings.clan_group_id is None:
+            await update.message.reply_text(
+                f"Bound {mention} to {html.escape(tag)} successfully.\n"
+                "Clan group is not configured yet.",
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+            return
         expire_at = datetime.now(timezone.utc) + timedelta(minutes=settings.invite_ttl_minutes)
         invite = await context.bot.create_chat_invite_link(
             chat_id=settings.clan_group_id,
@@ -352,11 +450,16 @@ async def bind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def unbind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.effective_user:
         return
-    if not ensure_private_chat(update):
-        await update.message.reply_text("Please use /unbind in a private chat with the bot.")
+    try:
+        if not ensure_private_chat(update):
+            await update.message.reply_text("Please use /unbind in a private chat with the bot.")
+            return
+        storage: BindingsStorage = context.application.bot_data["storage"]
+        removed = storage.delete_binding(settings.clan_group_id or 0, update.effective_user.id)
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to handle /unbind")
+        await update.message.reply_text("Unexpected error occurred. Please try again.")
         return
-    storage: BindingsStorage = context.application.bot_data["storage"]
-    removed = storage.delete_binding(settings.clan_group_id or 0, update.effective_user.id)
     if removed:
         mention = format_mention(update.effective_user.id, update.effective_user.full_name)
         message = f"Removed binding for {mention}."
@@ -372,19 +475,76 @@ async def unbind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def mytag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.effective_user:
         return
+    try:
+        if not ensure_private_chat(update):
+            await update.message.reply_text("Please use /mytag in a private chat with the bot.")
+            return
+        storage: BindingsStorage = context.application.bot_data["storage"]
+        binding = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
+        if not binding:
+            await update.message.reply_text("No tag bound for your account.")
+            return
+        await update.message.reply_text(
+            f"Your bound tag is {html.escape(binding.coc_player_tag)}",
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to handle /mytag")
+        await update.message.reply_text("Unexpected error occurred. Please try again.")
+
+
+async def bind_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.callback_query or not update.effective_user:
+        return
+    try:
+        await update.callback_query.answer()
+        if not ensure_private_chat(update):
+            await update.callback_query.edit_message_text(
+                "Please use /bind in a private chat with the bot."
+            )
+            return
+        context.user_data["awaiting_tag"] = True
+        await update.callback_query.edit_message_text(
+            "Send your player tag (e.g. #2PRGP0L22).",
+            reply_markup=bind_cancel_keyboard(),
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to handle bind_start callback")
+
+
+async def bind_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.callback_query:
+        return
+    try:
+        await update.callback_query.answer()
+        context.user_data.pop("awaiting_tag", None)
+        await update.callback_query.edit_message_text("Binding cancelled.")
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to handle bind_cancel callback")
+
+
+async def capture_tag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.effective_user:
+        return
     if not ensure_private_chat(update):
-        await update.message.reply_text("Please use /mytag in a private chat with the bot.")
         return
-    storage: BindingsStorage = context.application.bot_data["storage"]
-    binding = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
-    if not binding:
-        await update.message.reply_text("No tag bound for your account.")
+    if not context.user_data.get("awaiting_tag"):
         return
-    await update.message.reply_text(
-        f"Your bound tag is {html.escape(binding.coc_player_tag)}",
-        parse_mode=ParseMode.HTML,
-        disable_web_page_preview=True,
-    )
+    try:
+        raw_input = update.message.text or ""
+        extracted = extract_tag(raw_input)
+        if not extracted:
+            await update.message.reply_text(
+                "Invalid player tag format. Example: #2PRGP0L22",
+                reply_markup=bind_cancel_keyboard(),
+            )
+            return
+        context.user_data["awaiting_tag"] = False
+        await process_binding(update, context, extracted)
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to capture tag message")
+        await update.message.reply_text("Unexpected error occurred. Please try again.")
 
 
 async def verify_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -515,10 +675,17 @@ async def main() -> None:
     application.add_handler(CommandHandler("clan", clan))
     application.add_handler(CommandHandler("player", player))
     application.add_handler(CommandHandler("war", war))
+    application.add_handler(CommandHandler("ping", ping))
     application.add_handler(CommandHandler("bind", bind))
     application.add_handler(CommandHandler("unbind", unbind))
     application.add_handler(CommandHandler("mytag", mytag))
+    application.add_handler(CallbackQueryHandler(bind_start, pattern="^bind_start$"))
+    application.add_handler(CallbackQueryHandler(bind_cancel, pattern="^bind_cancel$"))
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, capture_tag)
+    )
     application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, verify_new_members))
+    application.add_error_handler(handle_handler_exception)
 
     if settings.war_reminder_enabled:
         application.job_queue.run_repeating(
