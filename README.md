@@ -49,6 +49,9 @@ cp .env.example .env
 - `REDIS_URL`: Redis connection string (default in `.env.example`)
 - `BACKEND_URL`: Backend service URL used by the bot
 - `BINDINGS_DB_PATH`: SQLite path for bindings (default `/data/bindings.db`)
+- `CLAN_GROUP_ID`: Telegram chat ID for the private clan group
+- `INVITE_TTL_MINUTES`: Minutes before invite link expires
+- `ENFORCE_CLAN_MEMBERSHIP`: Require bound player to be in `COC_CLAN_TAG` (true/false)
 - `WAR_REMINDER_ENABLED`: Enable war reminders (true/false)
 - `WAR_REMINDER_WINDOW_HOURS`: Reminder window in hours
 - `WAR_REMINDER_INTERVAL_MINUTES`: Reminder interval in minutes
@@ -81,11 +84,13 @@ docker compose logs -f
 
 ## Player Bindings & War Reminders
 
-Use these commands inside a group or supergroup chat:
+Use these commands inside a private chat with the bot:
 
-- `/bind #PLAYER_TAG`: Link your Telegram account to a Clash of Clans player tag.
-- `/unbind`: Remove your current binding for the group.
-- `/mytag`: Display your bound tag for the group.
+- `/bind #PLAYER_TAG`: Link your Telegram account to a Clash of Clans player tag and receive a one-time invite link.
+- `/unbind`: Remove your current binding.
+- `/mytag`: Display your bound tag.
+
+The clan group must be private. Add the bot as an admin with permission to invite users and remove unbound members. After a successful bind, the bot issues a short-lived, single-use invite link and verifies new members on join.
 
 When a war is active and the war end time is within the reminder window, the bot checks the clan war roster for members with 0 attacks used. If a bound player is found, the bot posts a single reminder message mentioning each bound user by ID. Each user is cooled down for one hour between reminders. Configure behavior with:
 
@@ -134,7 +139,7 @@ sudo systemctl start coc-telegram.service
 
 - **Verify env values inside containers**:
   - `docker compose exec backend env | grep -E 'COC_TOKEN|COC_CLAN_TAG|REDIS_URL'`
-  - `docker compose exec bot env | grep -E 'TELEGRAM_BOT_TOKEN|BACKEND_URL|BINDINGS_DB_PATH|WAR_REMINDER'`
+  - `docker compose exec bot env | grep -E 'TELEGRAM_BOT_TOKEN|BACKEND_URL|BINDINGS_DB_PATH|CLAN_GROUP_ID|INVITE_TTL_MINUTES|ENFORCE_CLAN_MEMBERSHIP|WAR_REMINDER'`
 - **401/403 from CoC API**: This often happens when `COC_TOKEN` is empty/invalid or the IP is not whitelisted. Confirm the token value exists in `.env` and is restricted to the correct public IP.
 - **CoC token rejected**: Ensure the token is IP-restricted to your home server's public IP, and that you are not running from a different network. Invalid tokens will return 403/404 or 429 from the backend.
 - **Docker networking**: Use `BACKEND_URL=http://backend:8000` inside Docker; `localhost` will refer to the bot container itself.
