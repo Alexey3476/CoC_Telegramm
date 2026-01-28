@@ -210,18 +210,28 @@ async def handle_handler_exception(
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message:
+    if not update.message or not update.effective_user:
         return
     try:
         logger.debug("Start command from user %s", update.effective_user.id)
         if ensure_private_chat(update):
+            # Private chat - show bind option
+            user_name = update.effective_user.first_name or "Player"
             await update.message.reply_text(
-                "To continue, bind your account.",
+                f"👋 Привет, {user_name}!\n\n"
+                f"Я — бот Clash of Clans для нашего клана.\n\n"
+                f"🔐 Чтобы присоединиться к группе клана, нужно:\n"
+                f"1️⃣ Привязать свой аккаунт\n"
+                f"2️⃣ Получить ссылку на группу\n"
+                f"3️⃣ Присоединиться\n\n"
+                f"Начнём с привязки!",
                 reply_markup=bind_keyboard(),
+                parse_mode=ParseMode.MARKDOWN,
             )
             return
+        # Group chat
         await update.message.reply_text(
-            "Welcome! Use /clan, /player <tag>, or /war to get Clash of Clans info."
+            "🎮 Привет! Напиши мне в личку (@bot_username) чтобы привязать аккаунт и присоединиться к группе!"
         )
     except Exception as e:  # noqa: BLE001
         logger.error("Failed to handle /start: %s", e, exc_info=settings.debug)
@@ -240,6 +250,43 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
     except Exception as e:  # noqa: BLE001
         logger.error("Failed to handle /menu: %s", e, exc_info=settings.debug)
+
+
+async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle first message in private chat - offer binding."""
+    if not update.message or not update.effective_user or not update.message.text:
+        return
+    
+    # Only for private chats
+    if not ensure_private_chat(update):
+        return
+    
+    # Skip if user is already bound
+    storage: BindingsStorage = context.application.bot_data["storage"]
+    binding = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
+    if binding:
+        # User is bound, offer menu instead
+        context.user_data.pop("awaiting_tag", None)  # Clear any waiting state
+        await update.message.reply_text(
+            f"✅ Вы привязаны как {html.escape(binding.coc_player_tag)}\n\n"
+            f"Что дальше?",
+            reply_markup=main_menu_keyboard(),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+    
+    # User not bound - offer binding
+    if not context.user_data.get("binding_offered"):
+        context.user_data["binding_offered"] = True
+        user_name = update.effective_user.first_name or "Player"
+        await update.message.reply_text(
+            f"👋 Привет, {user_name}!\n\n"
+            f"Я — бот Clash of Clans для нашего клана.\n\n"
+            f"🔐 Чтобы присоединиться к группе клана, нужно сначала привязать свой аккаунт.\n\n"
+            f"Нажми 'Привязать' 👇",
+            reply_markup=bind_keyboard(),
+            parse_mode=ParseMode.MARKDOWN,
+        )
 
 
 async def clan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1065,6 +1112,13 @@ async def main() -> None:
     application.add_handler(CallbackQueryHandler(bind_start, pattern="^bind_start$"))
     application.add_handler(CallbackQueryHandler(bind_cancel, pattern="^bind_cancel$"))
     application.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
+    
+    # Private message handler - offer binding to new users (group=0 to run early)
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_private_message),
+        group=0,
+    )
+    
     # AI mention handler: replies when the bot is mentioned or replied-to
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_reply_handler))
 
