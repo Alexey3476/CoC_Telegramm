@@ -244,3 +244,37 @@ async def get_clan_raids(client: httpx.AsyncClient, redis: Redis) -> dict[str, A
     except Exception:
         logger.exception("Failed to get clan raids")
         return {"currentRaid": None}
+
+async def get_clan_games(client: httpx.AsyncClient, redis: Redis) -> dict[str, Any]:
+    """Get clan games information."""
+    clan_tag = normalize_tag(settings.coc_clan_tag)
+    cache_key = f"games:{clan_tag}"
+    url = f"{settings.coc_api_base}/clans/{encode_tag(clan_tag)}"
+    
+    try:
+        data = await fetch_with_cache(client, redis, cache_key, url)
+        
+        # Get clan games info
+        clan_games = data.get("clanGames", {})
+        
+        if not clan_games:
+            return {"currentGames": None}
+        
+        state = clan_games.get("state", "notInProgress")
+        start_time = clan_games.get("startTime", "N/A")
+        end_time = clan_games.get("endTime", "N/A")
+        
+        games_info = {
+            "state": state,
+            "startTime": start_time,
+            "endTime": end_time,
+        }
+        
+        # If in progress, include score details
+        if state == "inProgress":
+            games_info["score"] = clan_games.get("memberGameInfo", {}).get("totalScore", "N/A")
+        
+        return {"currentGames": games_info}
+    except Exception:
+        logger.exception("Failed to get clan games")
+        return {"currentGames": None}

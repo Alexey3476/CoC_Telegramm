@@ -347,14 +347,17 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         keyboard = [
             [
                 InlineKeyboardButton("👥 Топ игроков", callback_data="menu_topplayers"),
-                InlineKeyboardButton("🏛️ Игры кланов", callback_data="menu_raids"),
+                InlineKeyboardButton("🏛️ Рейды", callback_data="menu_raids"),
             ],
             [
+                InlineKeyboardButton("🎮 Игры кланов", callback_data="menu_games"),
                 InlineKeyboardButton("🏘️ Информация о клане", callback_data="menu_clan"),
-                InlineKeyboardButton("📊 Война", callback_data="menu_war"),
             ],
             [
+                InlineKeyboardButton("📊 Война", callback_data="menu_war"),
                 InlineKeyboardButton("👤 Информация об игроке", callback_data="menu_player"),
+            ],
+            [
                 InlineKeyboardButton("⚙️ Привязка", callback_data="bind_start"),
             ],
         ]
@@ -799,6 +802,8 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await clan(update, context)
         elif callback_data == "menu_raids":
             await clan_raids(update, context)
+        elif callback_data == "menu_games":
+            await clan_games(update, context)
         elif callback_data == "menu_war":
             await war(update, context)
         elif callback_data == "menu_player":
@@ -1302,7 +1307,7 @@ async def top_players(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def clan_raids(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show clan raids (capital games) status."""
+    """Show clan raids (capital raids) status."""
     if not update.message and not update.callback_query:
         return
     async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
@@ -1311,29 +1316,28 @@ async def clan_raids(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             
             # If no data or no raids info, send message
             if not payload or "currentRaid" not in payload:
-                message = "ℹ️ Информация об играх кланов недоступна."
+                message = "ℹ️ Информация о рейдах столицы недоступна."
                 await send_or_edit_message(update, message)
                 return
             
             current_raid = payload.get("currentRaid")
             if not current_raid:
-                message = "ℹ️ Игры кланов не проводятся в данный момент."
+                message = "ℹ️ Рейды столицы не проводятся в данный момент."
                 await send_or_edit_message(update, message)
                 return
             
             # Format raid info
             state = current_raid.get("state", "unknown")
-            capital_name = current_raid.get("capitalName", "Capital")
             start_time = current_raid.get("startTime", "N/A")
             end_time = current_raid.get("endTime", "N/A")
             
             if state == "ongoing":
-                # Show current points
+                # Show current resources
                 clan_capital = current_raid.get("clan", {})
                 resources = clan_capital.get("resources", [])
                 
-                msg = f"🏛️ *Игры кланов: {capital_name}*\n\n"
-                msg += f"*Статус:* Идут в данный момент\n"
+                msg = f"🏛️ *Рейды столицы*\n\n"
+                msg += f"*Статус:* Идут в данный момент ⚔️\n"
                 msg += f"*Начало:* {start_time}\n"
                 msg += f"*Конец:* {end_time}\n"
                 
@@ -1344,8 +1348,8 @@ async def clan_raids(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                         amount = resource.get("amount", 0)
                         msg += f"• {resource_name}: {amount}\n"
             else:
-                # Show days until next
-                msg = f"🏛️ *Игры кланов: {capital_name}*\n\n"
+                # Show status when not in progress
+                msg = f"🏛️ *Рейды столицы*\n\n"
                 msg += f"*Статус:* Не проводятся\n"
                 msg += f"*Начало:* {start_time}\n"
                 msg += f"*Конец:* {end_time}\n"
@@ -1353,7 +1357,60 @@ async def clan_raids(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             await send_or_edit_message(update, msg)
         except httpx.HTTPStatusError as exc:
             logger.warning("Backend error: %s", exc)
-            await send_or_edit_message(update, "ℹ️ Информация об играх кланов недоступна.")
+            await send_or_edit_message(update, "ℹ️ Информация о рейдах недоступна.")
+        except httpx.RequestError as exc:
+            logger.warning("Backend unreachable: %s", exc)
+            await send_or_edit_message(update, "Backend is unreachable.")
+        except Exception:  # noqa: BLE001
+            logger.exception("Unhandled error in /clan-raids")
+            await send_or_edit_message(update, "Unexpected error occurred.")
+
+
+async def clan_games(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show clan games (Clan Games) status."""
+    if not update.message and not update.callback_query:
+        return
+    async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+        try:
+            payload = await fetch_json(client, "/games")
+            
+            # If no data or no games info, send message
+            if not payload or "currentGames" not in payload:
+                message = "ℹ️ Информация об играх кланов недоступна."
+                await send_or_edit_message(update, message)
+                return
+            
+            current_games = payload.get("currentGames")
+            if not current_games:
+                message = "ℹ️ Игры кланов не проводятся в данный момент."
+                await send_or_edit_message(update, message)
+                return
+            
+            # Format games info
+            state = current_games.get("state", "unknown")
+            start_time = current_games.get("startTime", "N/A")
+            end_time = current_games.get("endTime", "N/A")
+            
+            if state == "inProgress":
+                # Show current score
+                score = current_games.get("score", "N/A")
+                
+                msg = f"🎮 *Игры кланов*\n\n"
+                msg += f"*Статус:* Идут в данный момент 🏁\n"
+                msg += f"*Начало:* {start_time}\n"
+                msg += f"*Конец:* {end_time}\n"
+                msg += f"*Очки:* {score}\n"
+            else:
+                # Show status when not in progress
+                msg = f"🎮 *Игры кланов*\n\n"
+                msg += f"*Статус:* Не проводятся\n"
+                msg += f"*Начало:* {start_time}\n"
+                msg += f"*Конец:* {end_time}\n"
+            
+            await send_or_edit_message(update, msg)
+        except httpx.HTTPStatusError as exc:
+            logger.warning("Backend error: %s", exc)
+            await send_or_edit_message(update, "ℹ️ Информация об играх недоступна.")
         except httpx.RequestError as exc:
             logger.warning("Backend unreachable: %s", exc)
             await send_or_edit_message(update, "Backend is unreachable.")
