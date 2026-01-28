@@ -278,12 +278,13 @@ def main_menu_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
-async def send_or_edit_message(update: Update, text: str, parse_mode: str = ParseMode.MARKDOWN, reply_markup = None) -> None:
+async def send_or_edit_message(update: Update, text: str, parse_mode: str = ParseMode.MARKDOWN, reply_markup = None):
     """Send message for regular command or edit for callback query."""
     if update.message:
-        await update.message.reply_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+        return await update.message.reply_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
     elif update.callback_query:
-        await update.callback_query.edit_message_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+        return await update.callback_query.edit_message_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+    return None
 
 
 
