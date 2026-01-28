@@ -210,9 +210,20 @@ def bind_cancel_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def main_menu_keyboard() -> InlineKeyboardMarkup:
+def main_menu_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
     """Main menu with all bot functions."""
-    return InlineKeyboardMarkup([
+    # Check if this is Lex's menu
+    is_lex = False
+    if user_id and settings.lex_coc_tag:
+        storage: BindingsStorage = None  # Will be populated if needed
+        try:
+            # We need to check storage, but this is a function without context
+            # So we'll handle it in the menu handler instead
+            pass
+        except:  # noqa: BLE001
+            pass
+    
+    buttons = [
         [
             InlineKeyboardButton("👥 Топ игроков", callback_data="menu_topplayers"),
             InlineKeyboardButton("⚔️ Статистика клана", callback_data="menu_clanstats"),
@@ -225,7 +236,9 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("👤 Информация об игроке", callback_data="menu_player"),
             InlineKeyboardButton("⚙️ Привязка", callback_data="bind_start"),
         ],
-    ])
+    ]
+    
+    return InlineKeyboardMarkup(buttons)
 
 
 async def send_or_edit_message(update: Update, text: str, parse_mode: str = ParseMode.MARKDOWN, reply_markup = None) -> None:
@@ -287,10 +300,38 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
     try:
+        storage: BindingsStorage = context.application.bot_data["storage"]
+        binding = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
+        
+        # Check if this is Lex
+        is_lex = binding and settings.lex_coc_tag and binding.coc_player_tag == settings.lex_coc_tag
+        
+        # Create base keyboard
+        keyboard = [
+            [
+                InlineKeyboardButton("👥 Топ игроков", callback_data="menu_topplayers"),
+                InlineKeyboardButton("⚔️ Статистика клана", callback_data="menu_clanstats"),
+            ],
+            [
+                InlineKeyboardButton("🏘️ Информация о клане", callback_data="menu_clan"),
+                InlineKeyboardButton("📊 Война", callback_data="menu_war"),
+            ],
+            [
+                InlineKeyboardButton("👤 Информация об игроке", callback_data="menu_player"),
+                InlineKeyboardButton("⚙️ Привязка", callback_data="bind_start"),
+            ],
+        ]
+        
+        # Add report button for Lex
+        if is_lex:
+            keyboard.append([
+                InlineKeyboardButton("📋 Отчет об активности", callback_data="menu_report"),
+            ])
+        
         await update.message.reply_text(
             "🎮 *Меню бота*\n\n"
             "Выберите функцию:",
-            reply_markup=main_menu_keyboard(),
+            reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode=ParseMode.MARKDOWN,
         )
     except Exception as e:  # noqa: BLE001
@@ -337,10 +378,19 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
 async def clan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message and not update.callback_query:
         return
+    
+    # Answer callback query if this is from a button click
+    if update.callback_query:
+        await update.callback_query.answer()
+    
     async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
         try:
             payload = await fetch_json(client, "/clan")
-            await send_or_edit_message(update, format_clan(payload))
+            message = format_clan(payload)
+            if update.callback_query:
+                await update.callback_query.edit_message_text(message, parse_mode=ParseMode.MARKDOWN)
+            else:
+                await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             logger.warning("Backend error: %s", exc)
@@ -356,13 +406,24 @@ async def clan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 message = "Backend timed out contacting Clash of Clans."
             else:
                 message = "Backend error while fetching clan data."
-            await send_or_edit_message(update, message)
+            if update.callback_query:
+                await update.callback_query.edit_message_text(message)
+            else:
+                await update.message.reply_text(message)
         except httpx.RequestError as exc:
             logger.warning("Backend unreachable: %s", exc)
-            await send_or_edit_message(update, "Backend is unreachable. Please try again later.")
+            message = "Backend is unreachable. Please try again later."
+            if update.callback_query:
+                await update.callback_query.edit_message_text(message)
+            else:
+                await update.message.reply_text(message)
         except Exception:  # noqa: BLE001
             logger.exception("Unhandled error in /clan")
-            await send_or_edit_message(update, "Unexpected error occurred. Please try again.")
+            message = "Unexpected error occurred. Please try again."
+            if update.callback_query:
+                await update.callback_query.edit_message_text(message)
+            else:
+                await update.message.reply_text(message)
 
 
 async def player(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -717,6 +778,10 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             # Show player info using the callback_query (will use binding if no args)
             context.args = []  # Clear args to trigger binding lookup
             await player(update, context)
+        elif callback_data == "menu_report":
+            # Send activity report for Lex
+            await send_activity_report_to_user(context, update.effective_user.id)
+            await update.callback_query.edit_message_text("📋 Отчет об активности клана отправляется...")
         else:
             await update.callback_query.edit_message_text("Неизвестная команда")
     except Exception as e:
@@ -1035,28 +1100,39 @@ async def weekly_activity_report_job(context: ContextTypes.DEFAULT_TYPE) -> None
     if now.weekday() != 6:  # Sunday
         return
     
-    # Get Lex's user ID from settings
-    if not settings.lex_user_id:
-        logger.warning("LEX_USER_ID not configured for weekly activity report")
+    # Get Lex's user ID from database using their CoC tag
+    if not settings.lex_coc_tag:
+        logger.warning("LEX_COC_TAG not configured for weekly activity report")
         return
     
+    storage: BindingsStorage = context.application.bot_data["storage"]
+    lex_user_id = storage.get_user_id_by_tag(settings.clan_group_id or 0, settings.lex_coc_tag)
+    if not lex_user_id:
+        logger.warning("Lex not found in bindings by tag=%s", settings.lex_coc_tag)
+        return
+    
+    await send_activity_report_to_user(context, lex_user_id)
+
+
+async def send_activity_report_to_user(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
+    """Send activity report to specific user."""
     async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
         try:
             payload = await fetch_json(client, "/activity-report")
             message = format_activity_report(payload)
             await context.bot.send_message(
-                chat_id=settings.lex_user_id,
+                chat_id=user_id,
                 text=message,
                 parse_mode=ParseMode.MARKDOWN,
                 disable_web_page_preview=True,
             )
-            logger.info("Weekly activity report sent to user %s", settings.lex_user_id)
+            logger.info("Activity report sent to user %s", user_id)
         except httpx.HTTPStatusError as exc:
             logger.warning("Backend error fetching activity report: %s", exc)
         except httpx.RequestError as exc:
             logger.warning("Backend unreachable for activity report: %s", exc)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Failed to send weekly activity report: %s", exc)
+            logger.warning("Failed to send activity report: %s", exc)
 
 
 async def war_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:

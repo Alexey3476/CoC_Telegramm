@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     war_reminder_enabled: bool = True
     war_reminder_window_hours: int = 4
     war_reminder_interval_minutes: int = 15
-    lex_user_id: int | None = None
+    lex_coc_tag: str | None = None
 
     @field_validator("clan_group_id", mode="before")
     @classmethod
@@ -52,23 +52,6 @@ class Settings(BaseSettings):
         if isinstance(value, int):
             return value
         return None
-
-    @field_validator("lex_user_id", mode="before")
-    @classmethod
-    def parse_lex_user_id(cls, value: object) -> int | None:
-        if value is None:
-            return None
-        if isinstance(value, str):
-            if not value.strip():
-                return None
-            try:
-                return int(value)
-            except ValueError:
-                return None
-        if isinstance(value, int):
-            return value
-        return None
-
 
 settings = Settings()
 

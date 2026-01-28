@@ -161,6 +161,19 @@ class BindingsStorage:
         )
         return bindings
 
+    def get_user_id_by_tag(self, group_id: int, coc_tag: str) -> int | None:
+        """Get telegram user ID by CoC player tag."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT telegram_user_id FROM bindings WHERE group_id = ? AND coc_player_tag = ?",
+                (group_id, coc_tag),
+            ).fetchone()
+        if row:
+            self._logger.info("User lookup by tag tag=%s user_id=%s", coc_tag, row[0])
+            return row[0]
+        self._logger.info("User not found by tag=%s", coc_tag)
+        return None
+
     def get_group_ids(self) -> list[int]:
         with self._connect() as conn:
             rows = conn.execute("SELECT DISTINCT group_id FROM bindings").fetchall()
