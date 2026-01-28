@@ -1655,17 +1655,22 @@ async def main() -> None:
     application.add_handler(CallbackQueryHandler(bind_cancel, pattern="^bind_cancel$"))
     application.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
     
-    # Private message handler - offer binding to new users (group=0 to run early)
+    # Tag capture handler - must be first (highest priority) to handle tag input during binding
     application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_private_message),
+        MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, capture_tag),
         group=0,
     )
     
-    # AI mention handler: replies when the bot is mentioned or replied-to
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_reply_handler))
-
+    # Private message handler - offer binding to new users (group=1 to run after tag capture)
     application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, capture_tag)
+        MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_private_message),
+        group=1,
+    )
+    
+    # AI mention handler: replies when the bot is mentioned or replied-to (group=2 to run last)
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, ai_reply_handler),
+        group=2,
     )
     application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, verify_new_members))
     application.add_error_handler(handle_handler_exception)
