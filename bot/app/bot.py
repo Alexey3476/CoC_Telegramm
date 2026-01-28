@@ -714,37 +714,60 @@ async def log_any_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def ai_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Reply with AI-generated text when the bot is mentioned or directly replied-to.
-
-    - If `OPENAI_API_KEY` is set in env, call OpenAI Chat Completions API.
-    - Otherwise reply with a safe echo fallback.
-    """
+    """Reply with AI-generated text when bot is mentioned or replied-to using GPT4All."""
     if not update.message or not update.message.text:
+        logger.debug("ai_reply_handler: no message or text")
         return
 
     text = update.message.text
+    print(f"[AI_HANDLER] processing text: {text[:100]}", flush=True)
+    logger.debug(f"ai_reply_handler: processing text: {text[:100]}")
+    
+    # Detect if bot is mentioned
     bot_username = None
     try:
         bot_username = (context.bot.username or "").lower()
-    except Exception:
+        print(f"[AI_HANDLER] bot username = {bot_username}", flush=True)
+        logger.debug(f"ai_reply_handler: bot username = {bot_username}")
+    except Exception as e:
+        print(f"[AI_HANDLER] failed to get bot username: {e}", flush=True)
+        logger.debug(f"ai_reply_handler: failed to get bot username: {e}")
         bot_username = os.getenv("BOT_USERNAME", "").lower()
 
     mentioned = False
     if bot_username and f"@{bot_username}" in (text or "").lower():
         mentioned = True
-    # check if replying to bot
+        print(f"[AI_HANDLER] BOT MENTIONED DIRECTLY!", flush=True)
+        logger.info(f"ai_reply_handler: bot mentioned directly in text")
+    
+    # Check if replying to bot's message
     if not mentioned and update.message.reply_to_message:
         try:
-            if update.message.reply_to_message.from_user and update.message.reply_to_message.from_user.id == context.bot.id:
+            replied_to_bot = (
+                update.message.reply_to_message.from_user and
+                update.message.reply_to_message.from_user.id == context.bot.id
+            )
+            if replied_to_bot:
                 mentioned = True
-        except Exception:
-            pass
+                print(f"[AI_HANDLER] REPLYING TO BOT MESSAGE!", flush=True)
+                logger.info(f"ai_reply_handler: replying to bot message")
+        except Exception as e:
+            print(f"[AI_HANDLER] error checking reply: {e}", flush=True)
+            logger.debug(f"ai_reply_handler: error checking reply: {e}")
 
     if not mentioned:
+        print(f"[AI_HANDLER] bot not mentioned, returning", flush=True)
+        logger.debug("ai_reply_handler: bot not mentioned, returning")
         return
 
+    print(f"[AI_HANDLER] STARTING AI REPLY! Text: {text[:100]}", flush=True)
+    logger.info(f"ai_reply_handler: attempting AI reply for text: {text[:100]}")
+    
+    # Try OpenAI first if key is set
     openai_key = os.getenv("OPENAI_API_KEY")
     if openai_key:
+        print(f"[AI_HANDLER] attempting OpenAI", flush=True)
+        logger.info("ai_reply_handler: attempting OpenAI")
         try:
             async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
                 headers = {"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"}
@@ -758,47 +781,64 @@ async def ai_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 data = resp.json()
                 reply = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
                 if reply:
+                    print(f"[AI_HANDLER] OpenAI SUCCESS: {reply[:100]}", flush=True)
+                    logger.info(f"ai_reply_handler: OpenAI reply: {reply[:100]}")
                     await update.message.reply_text(reply)
                     return
-        except Exception as exc:  # fallback to safe reply
-            logger.warning("OpenAI request failed: %s", exc)
-    
-    # Use local GPT4All model (free, runs on CPU)
+        except Exception as exc:
+            print(f"[AI_HANDLER] OpenAI failed: {exc}", flush=True)
+            logger.warning(f"ai_reply_handler: OpenAI failed: {exc}")
+
+    # Try local GPT4All
+    print(f"[AI_HANDLER] ATTEMPTING GPT4ALL", flush=True)
+    logger.info("ai_reply_handler: attempting GPT4All")
     try:
-        from gpt4all import GPT4All
-        
-        # Run in executor to avoid blocking async event loop
         loop = asyncio.get_event_loop()
         
-        def generate_reply(prompt: str) -> str:
-            try:
-                # gpt4all-j is a compact, efficient model from Nomic AI
-                # Available models: gpt4all-j, orca-mini, mistral-7b, etc.
-                # Using gpt4all-j as default (good balance for Raspberry Pi 5)
-                model_name = os.getenv("LOCAL_MODEL", "gpt4all-j")
-                logger.debug("Loading GPT4All model: %s", model_name)
-                llm = GPT4All(model_name)
-                logger.debug("Model loaded, generating response...")
-                response = llm.generate(prompt, max_tokens=256, temp=0.7)
-                logger.debug("Response generated: %s", response[:100])
-                return response.strip()[:500]  # Limit reply length
-            except Exception as e:
-                logger.warning("GPT4All generation failed: %s", e, exc_info=True)
-                return None
+        def generate_with_gpt4all():
+            print(f"[AI_HANDLER] [THREAD] Importing GPT4All", flush=True)
+            from gpt4all import GPT4All
+            
+            model_name = os.getenv("LOCAL_MODEL", "tinyllama")
+            print(f"[AI_HANDLER] [THREAD] Loading model: {model_name}", flush=True)
+            logger.info(f"ai_reply_handler: loading GPT4All model: {model_name}")
+            
+            # Load model (blocking, will run in executor)
+            # allow_download=True so first use will download if needed
+            # Note: tinyllama is ~600MB, fits in memory
+            llm = GPT4All(model_name, device="cpu", allow_download=True, verbose=False)
+            print(f"[AI_HANDLER] [THREAD] MODEL LOADED! Generating...", flush=True)
+            logger.info(f"ai_reply_handler: model loaded, generating response")
+            
+            # Generate response
+            response = llm.generate(text, max_tokens=256, temp=0.7)
+            print(f"[AI_HANDLER] [THREAD] GENERATE RETURNED: {type(response)} = {repr(response[:150] if response else 'EMPTY')}", flush=True)
+            return response
         
-        logger.debug("Starting async executor for AI reply...")
-        reply = await loop.run_in_executor(None, generate_reply, text)
-        if reply:
-            logger.info("Sending AI-generated reply: %s...", reply[:100])
-            await update.message.reply_text(reply)
+        # Run in executor to not block event loop
+        response = await loop.run_in_executor(None, generate_with_gpt4all)
+        print(f"[AI_HANDLER] Response from executor: {repr(response[:150] if response else 'EMPTY')}", flush=True)
+        logger.info(f"ai_reply_handler: response generated: {response[:150] if response else 'EMPTY'}")
+        
+        if response and response.strip():
+            final_reply = response.strip()[:500]
+            print(f"[AI_HANDLER] SENDING AI REPLY: {final_reply[:100]}", flush=True)
+            logger.info(f"ai_reply_handler: sending reply: {final_reply[:100]}")
+            await update.message.reply_text(final_reply)
             return
-    except ImportError:
-        logger.warning("gpt4all not installed, using fallback")
+        else:
+            print(f"[AI_HANDLER] EMPTY RESPONSE FROM GPT4ALL!", flush=True)
+            logger.warning("ai_reply_handler: empty response from GPT4All")
+    except ImportError as e:
+        print(f"[AI_HANDLER] gpt4all not installed: {e}", flush=True)
+        logger.warning(f"ai_reply_handler: gpt4all not installed: {e}")
     except Exception as exc:
-        logger.warning("Local LLM request failed: %s", exc, exc_info=True)
+        print(f"[AI_HANDLER] GPT4ALL EXCEPTION: {exc}", flush=True)
+        logger.error(f"ai_reply_handler: GPT4All failed: {exc}", exc_info=True)
 
-    # Fallback reply if no API key or failure
-    logger.debug("Using fallback reply (no AI generated response)")
+    # Fallback
+    print(f"[AI_HANDLER] USING FALLBACK", flush=True)
+    logger.warning("ai_reply_handler: using fallback reply")
     safe_reply = f"Я упомянут! Вы написали: {text[:400]}"
     await update.message.reply_text(safe_reply)
 

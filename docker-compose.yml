@@ -22,7 +22,7 @@ services:
     env_file:
       - .env
     environment:
-      - LOCAL_MODEL=gpt4all-j
+      - LOCAL_MODEL=tinyllama
     depends_on:
       - backend
     restart: unless-stopped
