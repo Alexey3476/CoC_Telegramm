@@ -19,6 +19,8 @@ from app.coc_client import (
     get_clan_activity_report,
     get_clan_raids,
     get_clan_games,
+    get_player_activity,
+    get_next_war_analysis,
 )
 from app.settings import settings, validate_settings
 
@@ -209,6 +211,52 @@ async def games(request: Request):
     client = get_http_client(request)
     try:
         return await get_clan_games(client, redis)
+    except InvalidTagError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except UnauthorizedError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except ForbiddenError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/activity")
+async def activity(request: Request):
+    """Get clan members activity statistics."""
+    redis = get_redis(request)
+    client = get_http_client(request)
+    try:
+        return await get_player_activity(client, redis)
+    except InvalidTagError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except UnauthorizedError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except ForbiddenError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/next-war")
+async def next_war(request: Request):
+    """Analyze and recommend lineup for next war."""
+    redis = get_redis(request)
+    client = get_http_client(request)
+    try:
+        return await get_next_war_analysis(client, redis)
     except InvalidTagError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except UnauthorizedError as exc:

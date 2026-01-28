@@ -355,9 +355,10 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             ],
             [
                 InlineKeyboardButton("📊 Война", callback_data="menu_war"),
-                InlineKeyboardButton("👤 Информация об игроке", callback_data="menu_player"),
+                InlineKeyboardButton("⚔️ Следующая война", callback_data="menu_nextwar"),
             ],
             [
+                InlineKeyboardButton("👤 Информация об игроке", callback_data="menu_player"),
                 InlineKeyboardButton("⚙️ Привязка", callback_data="bind_start"),
             ],
         ]
@@ -806,6 +807,8 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await clan_games(update, context)
         elif callback_data == "menu_war":
             await war(update, context)
+        elif callback_data == "menu_nextwar":
+            await next_war_analysis(update, context)
         elif callback_data == "menu_player":
             # Show player info using the callback_query (will use binding if no args)
             context.args = []  # Clear args to trigger binding lookup
@@ -1273,31 +1276,44 @@ async def log_any_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def top_players(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show top 10 clan members by trophies."""
+    """Show most and least active clan members."""
     if not update.message and not update.callback_query:
         return
     async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
         try:
-            limit = 10
-            if context.args and context.args[0].isdigit():
-                limit = min(int(context.args[0]), 50)
+            payload = await fetch_json(client, "/activity")
             
-            payload = await fetch_json(client, f"/top-players?limit={limit}")
-            clan_name = payload.get("clanName", "Clan")
-            members = payload.get("members", [])
+            most_active = payload.get("mostActive", [])
+            least_active = payload.get("leastActive", [])
             
-            lines = [f"*Top {len(members)} Players in {clan_name}*\n"]
-            for i, member in enumerate(members, 1):
-                name = member.get("name", "Unknown")
-                trophies = member.get("trophies", 0)
-                th = member.get("townHallLevel", "?")
-                lines.append(f"{i}. {name} - {trophies} 🏆 (TH{th})")
+            msg = "🏆 *Активность клана*\n\n"
             
-            message = "\n".join(lines)
-            await send_or_edit_message(update, message)
+            # Most active
+            msg += "⭐ *Самые активные игроки:*\n"
+            for i, player in enumerate(most_active, 1):
+                name = player.get("name", "Unknown")
+                donations = player.get("donations", 0)
+                attacks = player.get("warAttacks", 0)
+                th = player.get("townHallLevel", "?")
+                msg += f"{i}. {name} (TH{th})\n"
+                msg += f"   💰 {donations} доната | ⚔️ {attacks} атак\n"
+            
+            msg += "\n"
+            
+            # Least active
+            msg += "📉 *Самые неактивные игроки:*\n"
+            for i, player in enumerate(least_active, 1):
+                name = player.get("name", "Unknown")
+                donations = player.get("donations", 0)
+                attacks = player.get("warAttacks", 0)
+                th = player.get("townHallLevel", "?")
+                msg += f"{i}. {name} (TH{th})\n"
+                msg += f"   💰 {donations} доната | ⚔️ {attacks} атак\n"
+            
+            await send_or_edit_message(update, msg)
         except httpx.HTTPStatusError as exc:
             logger.warning("Backend error: %s", exc)
-            await send_or_edit_message(update, "Failed to fetch top players. Try again later.")
+            await send_or_edit_message(update, "Failed to fetch player activity. Try again later.")
         except httpx.RequestError as exc:
             logger.warning("Backend unreachable: %s", exc)
             await send_or_edit_message(update, "Backend is unreachable.")
@@ -1520,7 +1536,71 @@ async def ai_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await update.message.reply_text(safe_reply)
 
 
-async def main() -> None:
+async def next_war_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show next war lineup recommendations based on comprehensive player analysis."""
+    if not update.callback_query and not update.message:
+        return
+    
+    msg = None
+    try:
+        msg = await send_or_edit_message(update, "⏳ Анализирую данные для следующей войны...")
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{settings.backend_url}/next-war")
+            response.raise_for_status()
+            data = response.json()
+        
+        clan_name = data.get("clanName", "Клан")
+        cwl_state = data.get("cwlState", "unknown")
+        war_state = data.get("currentWarState", "unknown")
+        recommended = data.get("topTen", [])
+        
+        msg_text = f"⚔️ *Рекомендуемый состав для следующей войны*\n"
+        msg_text += f"`{clan_name}`\n\n"
+        msg_text += f"📋 Состояние войны: `{war_state}`\n"
+        msg_text += f"🏆 Лига войн: `{cwl_state}`\n\n"
+        msg_text += "🎯 *Топ 10 рекомендуемых игроков:*\n\n"
+        
+        for i, player in enumerate(recommended, 1):
+            name = player.get("name", "Unknown")
+            th = player.get("townHallLevel", 0)
+            league = player.get("league", "Unranked")
+            war_ready = player.get("warReadiness", 0)
+            last_stars = player.get("lastWarStars", 0)
+            last_dest = player.get("lastWarDestruction", 0)
+            equipment_score = player.get("heroEquipmentScore", 0)
+            heroes_level = player.get("heroesLevel", 0)
+            war_stars = player.get("warStars", 0)
+            exp_level = player.get("expLevel", 0)
+            
+            # Build player info with all requested metrics
+            msg_text += f"{i}. *{name}*\n"
+            msg_text += f"   TH: {th} | Опыт: {exp_level}\n"
+            msg_text += f"   Лига: {league}\n"
+            msg_text += f"   ⭐ Звёзды: {war_stars} | 💪 Героев: {heroes_level}\n"
+            msg_text += f"   🛡️ Снаряжение: {equipment_score}\n"
+            msg_text += f"   Прошлая война: ⭐{last_stars} | 💥{last_dest}%\n"
+            msg_text += f"   Готовность: {war_ready:.0f}\n\n"
+        
+        analysis = data.get("analysisFactors", {})
+        msg_text += "📊 *Факторы анализа:*\n"
+        msg_text += f"• {analysis.get('lastWarPerformance', '')}\n"
+        msg_text += f"• {analysis.get('combatReadiness', '')}\n"
+        msg_text += f"• Сортировка: {analysis.get('sortedBy', '')}\n"
+        
+        await msg.edit_text(msg_text, parse_mode=ParseMode.MARKDOWN)
+    except httpx.HTTPStatusError as exc:
+        logger.warning("Backend error: %s", exc)
+        await send_or_edit_message(update, "ℹ️ Анализ для следующей войны недоступен.")
+    except httpx.RequestError as exc:
+        logger.warning("Backend unreachable: %s", exc)
+        await send_or_edit_message(update, "Backend is unreachable.")
+    except Exception:  # noqa: BLE001
+        logger.exception("Unhandled error in next_war_analysis")
+        await send_or_edit_message(update, "Unexpected error occurred.")
+
+
+
     logger.info("Bot environment snapshot: %s", env_snapshot())
     logger.info("Bot settings snapshot: %s", settings_snapshot())
     missing = validate_settings()

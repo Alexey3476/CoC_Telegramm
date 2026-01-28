@@ -278,3 +278,193 @@ async def get_clan_games(client: httpx.AsyncClient, redis: Redis) -> dict[str, A
     except Exception:
         logger.exception("Failed to get clan games")
         return {"currentGames": None}
+
+
+async def get_player_activity(client: httpx.AsyncClient, redis: Redis) -> dict[str, Any]:
+    """Get clan members activity statistics."""
+    clan_data = await get_clan(client, redis)
+    members = clan_data.get("memberList", [])
+    war_data = await get_war(client, redis)
+    war_state = war_data.get("state", "notInWar")
+    war_members = war_data.get("clan", {}).get("members", []) if war_state == "inWar" else []
+    
+    # Create activity scores for each member
+    member_activity = []
+    
+    for member in members:
+        tag = member.get("tag")
+        name = member.get("name", "Unknown")
+        
+        # Donation score
+        donations = member.get("donations", 0)
+        
+        # Last seen - convert ISO timestamp to days ago
+        last_seen = member.get("lastSeen", "2000-01-01T00:00:00.000Z")
+        
+        # War attacks
+        war_attacks = 0
+        if war_state == "inWar":
+            war_member = next((m for m in war_members if m.get("tag") == tag), None)
+            if war_member and war_member.get("attacks"):
+                war_attacks = len(war_member.get("attacks", []))
+        
+        # Combined activity score (higher = more active)
+        activity_score = donations + (war_attacks * 10)
+        
+        member_activity.append({
+            "name": name,
+            "tag": tag,
+            "donations": donations,
+            "lastSeen": last_seen,
+            "warAttacks": war_attacks,
+            "activityScore": activity_score,
+            "townHallLevel": member.get("townHallLevel", 0),
+            "trophies": member.get("trophies", 0),
+        })
+    
+    # Sort by activity score
+    most_active = sorted(member_activity, key=lambda x: x["activityScore"], reverse=True)[:10]
+    least_active = sorted(member_activity, key=lambda x: x["activityScore"])[:10]
+    
+    return {
+        "mostActive": most_active,
+        "leastActive": least_active,
+    }
+
+
+async def get_next_war_analysis(client: httpx.AsyncClient, redis: Redis) -> dict[str, Any]:
+    """Analyze and rank members for next war based on:
+    - War stars from last war
+    - Player experience level
+    - War league and season
+    - Hero equipment quality
+    - Trophies and town hall level
+    """
+    clan_data = await get_clan(client, redis)
+    members = clan_data.get("memberList", [])
+    
+    war_data = await get_war(client, redis)
+    war_state = war_data.get("state", "notInWar")
+    
+    # Get war log to analyze last war performance
+    clan_tag = normalize_tag(settings.coc_clan_tag)
+    cache_key = f"warlog:{clan_tag}"
+    url = f"{settings.coc_api_base}/clans/{encode_tag(clan_tag)}/warlog"
+    warlog_data = await fetch_with_cache(client, redis, cache_key, url)
+    last_war = warlog_data[0] if warlog_data else {}
+    
+    # Get clan war league data
+    cwl_cache_key = f"cwl:{clan_tag}"
+    cwl_url = f"{settings.coc_api_base}/clans/{encode_tag(clan_tag)}/currentwarleaguegroup"
+    try:
+        cwl_data = await fetch_with_cache(client, redis, cwl_cache_key, cwl_url)
+    except (NotFoundError, ForbiddenError):
+        cwl_data = {"state": "unknown"}
+    
+    member_rankings = []
+    
+    for member in members:
+        tag = member.get("tag")
+        name = member.get("name", "Unknown")
+        
+        # Basic stats
+        town_hall = member.get("townHallLevel", 0)
+        trophies = member.get("trophies", 0)
+        exp_level = member.get("expLevel", 0)
+        war_stars = member.get("warStars", 0)
+        donations = member.get("donations", 0)
+        war_preference = member.get("warPreference", "out")
+        
+        # League info
+        league = member.get("league", {})
+        league_name = league.get("name", "Unranked")
+        league_id = league.get("id", 0)
+        
+        # Get full player data for hero equipment
+        try:
+            player_data = await get_player(client, redis, tag)
+        except Exception:
+            player_data = {}
+        
+        # Hero equipment quality score
+        equipment = player_data.get("heroEquipment", [])
+        equipment_score = sum(e.get("level", 0) for e in equipment)
+        equipment_count = len(equipment)
+        
+        # Heroes level sum
+        heroes = player_data.get("heroes", [])
+        heroes_level = sum(h.get("level", 0) for h in heroes)
+        
+        # Last war performance (from warlog)
+        last_war_stars = 0
+        last_war_destruction = 0
+        if last_war:
+            clan_members = last_war.get("clan", {}).get("members", [])
+            for wm in clan_members:
+                if wm.get("tag") == tag:
+                    last_war_stars = wm.get("stars", 0)
+                    attacks = wm.get("attacks", [])
+                    if attacks:
+                        last_war_destruction = attacks[0].get("destructionPercentage", 0)
+        
+        # Combat readiness score (higher = better)
+        # Components:
+        # - Heroes level (max ~700 for all heroes)
+        # - Equipment level (varies)
+        # - War preference (in = +50, out = -50)
+        # - Experience level (max ~256)
+        # - Trophies (relevance lower)
+        combat_score = (
+            heroes_level * 2 +  # Double weight on heroes
+            equipment_score +    # Equipment level sum
+            exp_level +          # Experience level
+            (50 if war_preference == "in" else -50) +
+            (trophies // 100)    # Normalize trophies
+        )
+        
+        # War readiness score combines all factors
+        war_readiness = (
+            (last_war_stars * 50) +          # Last war performance
+            (last_war_destruction) +         # Destruction %
+            combat_score +                   # Combat readiness
+            (war_stars / 10) +               # Historical war stars
+            (league_id / 1000)               # League level
+        )
+        
+        member_rankings.append({
+            "name": name,
+            "tag": tag,
+            "townHallLevel": town_hall,
+            "trophies": trophies,
+            "expLevel": exp_level,
+            "warStars": war_stars,
+            "donations": donations,
+            "warPreference": war_preference,
+            "league": league_name,
+            "leagueId": league_id,
+            "heroesLevel": heroes_level,
+            "heroEquipmentScore": equipment_score,
+            "heroEquipmentCount": equipment_count,
+            "lastWarStars": last_war_stars,
+            "lastWarDestruction": last_war_destruction,
+            "combatReadiness": combat_score,
+            "warReadiness": war_readiness,
+        })
+    
+    # Sort by war readiness (descending)
+    ranked = sorted(member_rankings, key=lambda x: x["warReadiness"], reverse=True)
+    
+    return {
+        "clanName": clan_data.get("name"),
+        "clanTag": clan_data.get("tag"),
+        "cwlState": cwl_data.get("state"),
+        "currentWarState": war_state,
+        "recommendedLineup": ranked,
+        "topTen": ranked[:10],
+        "analysisFactors": {
+            "lastWarPerformance": "Stars and destruction % from most recent war",
+            "combatReadiness": "Heroes level, equipment, experience, war preference",
+            "warReadiness": "Combined score for next war prediction",
+            "sortedBy": "warReadiness (descending - best first)",
+        }
+    }
