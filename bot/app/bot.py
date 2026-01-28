@@ -772,25 +772,33 @@ async def ai_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         
         def generate_reply(prompt: str) -> str:
             try:
-                # orca-mini-3b is a compact model good for Raspberry Pi 5
-                model_name = os.getenv("LOCAL_MODEL", "orca-mini")
+                # gpt4all-j is a compact, efficient model from Nomic AI
+                # Available models: gpt4all-j, orca-mini, mistral-7b, etc.
+                # Using gpt4all-j as default (good balance for Raspberry Pi 5)
+                model_name = os.getenv("LOCAL_MODEL", "gpt4all-j")
+                logger.debug("Loading GPT4All model: %s", model_name)
                 llm = GPT4All(model_name)
+                logger.debug("Model loaded, generating response...")
                 response = llm.generate(prompt, max_tokens=256, temp=0.7)
+                logger.debug("Response generated: %s", response[:100])
                 return response.strip()[:500]  # Limit reply length
             except Exception as e:
-                logger.warning("GPT4All generation failed: %s", e)
+                logger.warning("GPT4All generation failed: %s", e, exc_info=True)
                 return None
         
+        logger.debug("Starting async executor for AI reply...")
         reply = await loop.run_in_executor(None, generate_reply, text)
         if reply:
+            logger.info("Sending AI-generated reply: %s...", reply[:100])
             await update.message.reply_text(reply)
             return
     except ImportError:
         logger.warning("gpt4all not installed, using fallback")
     except Exception as exc:
-        logger.warning("Local LLM request failed: %s", exc)
+        logger.warning("Local LLM request failed: %s", exc, exc_info=True)
 
     # Fallback reply if no API key or failure
+    logger.debug("Using fallback reply (no AI generated response)")
     safe_reply = f"Я упомянут! Вы написали: {text[:400]}"
     await update.message.reply_text(safe_reply)
 

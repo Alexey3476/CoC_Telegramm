@@ -22,7 +22,7 @@ services:
     env_file:
       - .env
     environment:
-      - LOCAL_MODEL=orca-mini
+      - LOCAL_MODEL=gpt4all-j
     depends_on:
       - backend
     restart: unless-stopped
