@@ -389,6 +389,10 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
     if not ensure_private_chat(update):
         return
     
+    # Skip if user is waiting for tag input (capture_tag will handle it)
+    if context.user_data.get("awaiting_tag"):
+        return
+    
     # Skip if user is already bound
     storage: BindingsStorage = context.application.bot_data["storage"]
     binding = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
@@ -870,11 +874,18 @@ async def capture_tag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 reply_markup=bind_cancel_keyboard(),
             )
             return
-        context.user_data["awaiting_tag"] = False
+        # Only clear awaiting_tag after successful processing
         await process_binding(update, context, extracted)
+        # Clear only after successful binding
+        context.user_data["awaiting_tag"] = False
+        context.user_data["binding_offered"] = False  # Reset so menu shows next time
     except Exception:  # noqa: BLE001
         logger.exception("Failed to capture tag message")
-        await update.message.reply_text("Unexpected error occurred. Please try again.")
+        # Don't clear awaiting_tag - let user try again
+        await update.message.reply_text(
+            "Unexpected error occurred. Please try again.",
+            reply_markup=bind_cancel_keyboard(),
+        )
 
 
 async def chatid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
