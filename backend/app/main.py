@@ -445,15 +445,18 @@ async def selection_last_seen(tag: str, body: ManualLastSeenUpdate, request: Req
 
 
 @app.get("/next-war")
-async def next_war(request: Request, mode: str = "war"):
+async def next_war(request: Request, mode: str = "war", size: int | None = None):
     """Analyze and recommend lineup for next war."""
     if mode not in {"war", "cwl"}:
         raise HTTPException(status_code=400, detail="mode must be war or cwl")
+    if size is not None and (size < 5 or size > 50 or size % 5 != 0):
+        raise HTTPException(status_code=400, detail="size must be 5..50 in increments of 5")
     redis = get_redis(request)
     client = get_http_client(request)
     try:
         return await get_next_war_analysis(client, redis, request.app.state.history,
-                                           request.app.state.selection, mode=mode)
+                                           request.app.state.selection, mode=mode,
+                                           requested_size=size if mode == "war" else 15)
     except InvalidTagError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except UnauthorizedError as exc:

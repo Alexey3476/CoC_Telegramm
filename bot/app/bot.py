@@ -2039,7 +2039,10 @@ async def next_war_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                                      parse_mode=None)
     try:
         async with httpx.AsyncClient(timeout=max(60, settings.request_timeout_seconds)) as client:
-            response = await client.get(build_url("/next-war"), params={"mode": mode})
+            params = {"mode": mode}
+            if mode == "war" and context.user_data.get("lineup_war_size"):
+                params["size"] = context.user_data["lineup_war_size"]
+            response = await client.get(build_url("/next-war"), params=params)
             response.raise_for_status()
             data = response.json()
         # The backend intentionally has no access to Telegram identities.
@@ -2083,6 +2086,14 @@ async def lineup_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     await update.callback_query.answer()
     _, stage, page_raw = (update.callback_query.data or "").split(":", 2)
+    if stage == "size":
+        requested_size = int(page_raw)
+        if requested_size not in range(5, 51, 5):
+            return
+        context.user_data["lineup_war_size"] = requested_size
+        context.user_data["lineup_mode"] = "war"
+        await next_war_analysis(update, context)
+        return
     if stage == "mode":
         if page_raw not in {"war", "cwl"}:
             return
@@ -2183,7 +2194,7 @@ async def main() -> None:
     application.add_handler(CallbackQueryHandler(growth_callback, pattern=r"^growth:days:(0|7|30)$"))
     application.add_handler(CallbackQueryHandler(staff_callback, pattern=r"^staff:(promotion|kick|bonus)$"))
     application.add_handler(CallbackQueryHandler(
-        lineup_callback, pattern=r"^lineup:(main|bench|details|about|player|refresh|inactive|optout|needs_review|cwl_excluded|twinks|kick|promotion|bonus|weights):[0-9]+$|^lineup:mode:(war|cwl)$"
+        lineup_callback, pattern=r"^lineup:(main|bench|details|about|player|refresh|inactive|optout|needs_review|cwl_excluded|twinks|kick|promotion|bonus|weights|sizes|size):[0-9]+$|^lineup:mode:(war|cwl)$"
     ))
     
     # One router avoids two handlers replying to a successful token message.

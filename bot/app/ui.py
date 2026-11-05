@@ -151,6 +151,14 @@ def lineup_keyboard(stage: str = "main", page: int = 0, data: dict | None = None
     ]
     if mode == "cwl":
         rows.append([InlineKeyboardButton("⛔ Пропустили раунд ЛВК", callback_data="lineup:cwl_excluded:0")])
+    else:
+        chosen = int((data or {}).get("selectionRequestedSize") or 15)
+        rows.append([InlineKeyboardButton(f"🔢 Размер КВ: {chosen}×{chosen}", callback_data="lineup:sizes:0")])
+        if stage == "sizes":
+            for first in (5, 20, 35):
+                rows.append([InlineKeyboardButton(f"{size}×{size}", callback_data=f"lineup:size:{size}")
+                             for size in range(first, first + 15, 5)])
+            rows.append([InlineKeyboardButton("50×50", callback_data="lineup:size:50")])
     if captain:
         rows.extend([
             [InlineKeyboardButton("⚠️ Кик · проверить", callback_data="lineup:kick:0"),
@@ -195,6 +203,8 @@ def lineup_message(data: dict, stage: str = "main", page: int = 0) -> str:
         f"Режим: <b>{mode}</b> · Состав: {len(categories.get('main') or [])} · "
         f"История: {total} войн\n"
     )
+    if stage == "sizes":
+        return header + "\nВыбери размер обычной КВ (от 5×5 до 50×50). ЛВК остаётся 15×15."
     if stage == "weights":
         weights = data.get("weights") or {
             "strength": 20, "discipline": 35, "quality": 35, "role": 10,

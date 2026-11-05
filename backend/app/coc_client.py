@@ -247,6 +247,7 @@ async def get_clan_members(client: httpx.AsyncClient, redis: TTLCache, limit: in
     # Sort by trophies descending
     sorted_members = sorted(members, key=lambda m: m.get("trophies", 0), reverse=True)
     return {
+        "selectionRequestedSize": suggested_size,
         "clanName": clan_data.get("name"),
         "clanTag": clan_data.get("tag"),
         "members": sorted_members[:limit]
@@ -424,6 +425,7 @@ async def get_next_war_analysis(
     history: WarHistory | None = None,
     policy: SelectionStore | None = None,
     mode: str = "war",
+    requested_size: int | None = None,
 ) -> dict[str, Any]:
     """Evidence-based lineup. Unknown history is missing data, not zero performance."""
     clan_data = await get_clan(client, redis)
@@ -458,7 +460,7 @@ async def get_next_war_analysis(
     try:
         war_data = await get_war(client, redis)
         current_state = war_data.get("state", "unknown")
-        suggested_size = max(5, min(50, int(war_data.get("teamSize") or 15)))
+        suggested_size = max(5, min(50, int(war_data.get("teamSize") or 15))) if mode == "war" else 15
     except (NotFoundError, ForbiddenError, RateLimitError, RuntimeError, TimeoutError):
         current_state = "unavailable"
     try:
@@ -467,6 +469,11 @@ async def get_next_war_analysis(
         cwl_state = cwl_data.get("state", "unknown")
     except (NotFoundError, ForbiddenError, RateLimitError, RuntimeError, TimeoutError):
         cwl_state = "unavailable"
+
+    if mode == "cwl":
+        suggested_size = 15  # This clan registers the 15v15 CWL format.
+    elif requested_size is not None:
+        suggested_size = requested_size
 
     semaphore = asyncio.Semaphore(5)
 
