@@ -25,7 +25,7 @@ from telegram.helpers import escape_markdown
 from app.backend_client import build_url, fetch_json
 from app.bindings_storage import Binding, BindingsStorage
 from app.settings import env_snapshot, settings, settings_snapshot, validate_settings
-from app.ui import format_war_message, format_raid_message, lineup_message, lineup_keyboard
+from app.ui import format_war_message, format_raid_message, lineup_message, lineup_keyboard, format_cwl_message
 from app.tags import assign_game_tag, sync_tags_daily
 from app.binding_ui import sorted_roster, roster_keyboard
 
@@ -256,11 +256,12 @@ def main_menu_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("⚔️ Война", callback_data="menu_war"),
          InlineKeyboardButton("📋 Следующий состав", callback_data="menu_nextwar")],
         [InlineKeyboardButton("👥 Игроки", callback_data="menu_topplayers"),
-         InlineKeyboardButton("🏛️ Столица", callback_data="menu_raids")],
-        [InlineKeyboardButton("🏰 Клан", callback_data="menu_clan"),
-         InlineKeyboardButton("👤 Профиль", callback_data="menu_profile")],
-        [InlineKeyboardButton("🔐 Привязка", callback_data="bind_start"),
-         InlineKeyboardButton("❓ Справка", callback_data="menu_help")],
+         InlineKeyboardButton("🏆 Лига CWL", callback_data="menu_cwl")],
+        [InlineKeyboardButton("🏛️ Столица", callback_data="menu_raids"),
+         InlineKeyboardButton("🏰 Клан", callback_data="menu_clan")],
+        [InlineKeyboardButton("👤 Профиль", callback_data="menu_profile"),
+         InlineKeyboardButton("🔐 Привязка", callback_data="bind_start")],
+        [InlineKeyboardButton("❓ Справка", callback_data="menu_help")],
     ])
 
 
@@ -274,6 +275,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/menu — главное меню с кнопками\n"
         "/war — текущая война и атаки\n"
         "/nextwar — подбор состава и история\n"
+        "/cwl — результаты ЛВК\n"
         "/clan — данные клана\n"
         "/topplayers — рейтинг активности\n"
         "/raids — рейды столицы\n"
@@ -293,6 +295,8 @@ async def sync_bot_commands(bot) -> None:
     base = [BotCommand("menu", "🏠 Штаб клана"),
             BotCommand("war", "⚔️ Текущая война"),
             BotCommand("nextwar", "📋 Следующий состав"),
+         BotCommand("cwl", "🏆 Результаты CWL"),
+            BotCommand("cwl", "🏆 Лига CWL"),
             BotCommand("profile", "👤 Мой профиль"),
             BotCommand("clan", "🏰 Информация о клане"),
             BotCommand("help", "❓ Помощь")]
@@ -801,6 +805,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "menu_games": clan_games,
         "menu_war": war,
         "menu_nextwar": next_war_analysis,
+        "menu_cwl": cwl,
         "menu_player": player,
         "menu_profile": player,
         "menu_help": help_command,
@@ -1456,6 +1461,18 @@ async def ai_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await update.message.reply_text(safe_reply)
 
 
+async def cwl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message and not update.callback_query:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=max(45, settings.request_timeout_seconds)) as client:
+            payload = await fetch_json(client, "/cwl")
+        await send_or_edit_message(update, format_cwl_message(payload), parse_mode=ParseMode.HTML)
+    except (httpx.HTTPStatusError, httpx.RequestError):
+        logger.warning("CWL service unavailable")
+        await send_or_edit_message(update, "🏆 Сведения о CWL пока недоступны.")
+
+
 async def next_war_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show a paginated, evidence-labelled lineup rather than a wall of text."""
     if not update.callback_query and not update.message:
@@ -1532,6 +1549,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("player", player))
     application.add_handler(CommandHandler("war", war))
     application.add_handler(CommandHandler("nextwar", next_war_analysis))
+    application.add_handler(CommandHandler("cwl", cwl))
     application.add_handler(CommandHandler("raids", clan_raids))
     application.add_handler(CommandHandler("games", clan_games))
     application.add_handler(CommandHandler("ping", ping))

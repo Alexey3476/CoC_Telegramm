@@ -202,3 +202,20 @@ def lineup_message(data: dict, stage: str = "main", page: int = 0) -> str:
         rows.append("Нет доступных игроков.")
     rows.append("\n⚠️ Индексы без истории нельзя сравнивать как подтверждённую надёжность.")
     return "\n".join(rows)[:4000]
+
+
+def format_cwl_message(data: dict) -> str:
+    rounds = data.get("rounds") or []
+    if data.get("state") == "notInWar" and not rounds:
+        return "🏆 <b>Лига клановых войн</b>\nСейчас нет доступных раундов CWL."
+    lines = ["🏆 <b>Лига клановых войн · CWL</b>",
+             f"Раундов в группе: {data.get('scheduledRounds', '?')}",
+             f"Доступно наших войн: {data.get('observedRounds', 0)}",
+             f"✅ {data.get('wins', 0)} побед · 🤝 {data.get('draws', 0)} ничьих · ❌ {data.get('losses', 0)} поражений",
+             ""]
+    results = {"win": "✅ Победа", "draw": "🤝 Ничья", "loss": "❌ Поражение", "pending": "⏳ Не завершена"}
+    for index, war in enumerate(rounds[-10:], start=max(1, len(rounds) - 9)):
+        lines.append(f"<b>{index}. {html.escape(str(war.get('enemy') or '?'))}</b> · {results.get(war.get('result'), '⏳')}")
+        lines.append(f"⭐ {war.get('stars', 0)} : {war.get('enemyStars', 0)} · {game_time(war.get('startTime'))}")
+    lines.append("\nℹ️ Результаты наблюдаемых войн, не официальная таблица мест CWL.")
+    return "\n".join(lines)[:4000]

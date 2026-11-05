@@ -26,6 +26,7 @@ from app.coc_client import (
     get_clan_games,
     get_player_activity,
     get_next_war_analysis,
+    get_cwl_summary,
     normalize_tag,
     encode_tag,
 )
@@ -190,6 +191,20 @@ async def top_players(request: Request, limit: int = 10):
         raise HTTPException(status_code=504, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/cwl")
+async def cwl(request: Request):
+    try:
+        return await get_cwl_summary(get_http_client(request), get_redis(request))
+    except UnauthorizedError as exc:
+        raise HTTPException(status_code=401, detail="CWL token invalid") from exc
+    except ForbiddenError as exc:
+        raise HTTPException(status_code=403, detail="CWL access forbidden") from exc
+    except RateLimitError as exc:
+        raise HTTPException(status_code=429, detail="CWL API rate limit") from exc
+    except (RuntimeError, TimeoutError) as exc:
+        raise HTTPException(status_code=502, detail="CWL API unavailable") from exc
 
 
 @app.get("/health")

@@ -145,6 +145,45 @@ async def get_league_wars(
     return group, [war for war in fetched if war is not None]
 
 
+def summarize_cwl(group: dict[str, Any], wars: list[dict[str, Any]], clan_tag: str) -> dict[str, Any]:
+    """Our own observed CWL results; never invent the official league standings."""
+    observed = []
+    seen = set()
+    for war in sorted(wars, key=lambda x: x.get("startTime") or ""):
+        own, enemy = war.get("clan") or {}, war.get("opponent") or {}
+        if enemy.get("tag") == clan_tag:
+            own, enemy = enemy, own
+        if own.get("tag") != clan_tag:
+            continue
+        identity = (war.get("startTime"), enemy.get("tag"))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        s, e = int(own.get("stars") or 0), int(enemy.get("stars") or 0)
+        d = float(own.get("destructionPercentage") or 0) - float(enemy.get("destructionPercentage") or 0)
+        result = "pending"
+        if war.get("state") == "warEnded":
+            result = "win" if s > e or (s == e and d > 0) else ("draw" if s == e and d == 0 else "loss")
+        observed.append({
+            "enemy": enemy.get("name") or "Соперник", "result": result,
+            "stars": s, "enemyStars": e, "startTime": war.get("startTime"),
+        })
+    return {
+        "state": group.get("state") or "notInWar",
+        "scheduledRounds": len(group.get("rounds") or []),
+        "observedRounds": len(observed),
+        "wins": sum(x["result"] == "win" for x in observed),
+        "draws": sum(x["result"] == "draw" for x in observed),
+        "losses": sum(x["result"] == "loss" for x in observed),
+        "rounds": observed,
+    }
+
+
+async def get_cwl_summary(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
+    group, wars = await get_league_wars(client, redis)
+    return summarize_cwl(group, wars, normalize_tag(settings.coc_clan_tag))
+
+
 async def get_war(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
     """Regular current war, or the current CWL war when the regular endpoint is empty."""
     regular = await get_regular_war(client, redis)
