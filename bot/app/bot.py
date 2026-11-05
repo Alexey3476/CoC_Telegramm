@@ -28,6 +28,7 @@ from app.settings import env_snapshot, settings, settings_snapshot, validate_set
 from app.ui import format_war_message, format_raid_message, lineup_message, lineup_keyboard, format_cwl_message
 from app.tags import assign_game_tag, sync_tags_daily
 from app.binding_ui import sorted_roster, roster_keyboard
+from app.accounts_ui import accounts_text, accounts_keyboard, delete_confirmation
 from app.captain import is_captain, captain_report_text
 
 log_level = logging.DEBUG if settings.debug else logging.INFO
@@ -261,7 +262,7 @@ def main_menu_keyboard(user_id: int | None = None, captain: bool = False) -> Inl
         [InlineKeyboardButton("🏛️ Столица", callback_data="menu_raids"),
          InlineKeyboardButton("🏰 Клан", callback_data="menu_clan")],
         [InlineKeyboardButton("👤 Профиль", callback_data="menu_profile"),
-         InlineKeyboardButton("🔐 Привязка", callback_data="bind_start")],
+         InlineKeyboardButton("👥 Мои аккаунты", callback_data="menu_accounts")],
         [InlineKeyboardButton("📈 Развитие", callback_data="menu_progress"),
          InlineKeyboardButton("❓ Справка", callback_data="menu_help")],
     ]
@@ -287,7 +288,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/topplayers — рейтинг активности\n"
         "/raids — рейды столицы\n"
         "/profile — мой игровой профиль\n"
-        "/bind — привязать игровой аккаунт\n"
+        "/bind — привязать ещё один аккаунт\n"
+        "/accounts — управление аккаунтами и ЛВК\n"
+        "/primary #ТЕГ — выбрать основной аккаунт\n"
+        "/cwlopt in|out — заявка на ЛВК для основного\n"
+        "/unbind #ТЕГ — удалить свою привязку\n"
+        "/unlink #ТЕГ — удалить чужую привязку (руководство)\n"
+        "/lastseen #ТЕГ YYYY-MM-DD HH:MM — ручная отметка (руководство)\n"
         "/grouplink — получить приглашение\n"
         "/unbind — отвязать аккаунт\n"
         "/chatid — ID группы (для администратора)\n\n"
@@ -305,11 +312,12 @@ async def sync_bot_commands(bot) -> None:
             BotCommand("cwl", "🏆 Лига CWL"),
             BotCommand("progress", "📈 Прогресс игрока"),
             BotCommand("profile", "👤 Мой профиль"),
+            BotCommand("accounts", "👥 Мои аккаунты"),
             BotCommand("clan", "🏰 Информация о клане"),
             BotCommand("help", "❓ Помощь")]
     await bot.set_my_commands(base)
     await bot.set_my_commands(
-        base + [BotCommand("bind", "🔐 Привязать игрока"),
+        base + [BotCommand("bind", "🔐 Привязать ещё аккаунт"),
                 BotCommand("grouplink", "🔗 Ссылка в группу")],
         scope=BotCommandScopeAllPrivateChats(),
     )
@@ -390,13 +398,14 @@ async def has_captain_access(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not ensure_private_chat(update) or not update.effective_user:
         return False
     storage: BindingsStorage = context.application.bot_data["storage"]
-    binding = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
-    if not binding:
+    owned = storage.get_bindings_for_user(settings.clan_group_id or 0, update.effective_user.id)
+    if not owned:
         return False
     try:
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
             clan_data = await fetch_json(client, "/clan")
-        return is_captain(clan_data.get("memberList") or [], binding.coc_player_tag)
+        roster = clan_data.get("memberList") or []
+        return any(is_captain(roster, account.coc_player_tag) for account in owned)
     except (httpx.RequestError, httpx.HTTPStatusError):
         return False
 
@@ -782,28 +791,199 @@ async def process_binding(
         )
 
 
-async def unbind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message or not update.effective_user:
+async def accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Private, multi-account overview. CoC war preference is read-only."""
+    if not ensure_private_chat(update) or not update.effective_user:
+        return
+    storage: BindingsStorage = context.application.bot_data["storage"]
+    owned = storage.get_bindings_for_user(settings.clan_group_id or 0, update.effective_user.id)
+    prefs = {}
+    async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+        for binding in owned[:15]:
+            try:
+                player_data = await fetch_json(client, f"/player/{encode_tag(binding.coc_player_tag)}")
+                prefs[binding.coc_player_tag] = player_data.get("warPreference") or "unknown"
+            except (httpx.RequestError, httpx.HTTPStatusError):
+                prefs[binding.coc_player_tag] = "unknown"
+    await send_or_edit_message(update, accounts_text(owned, prefs),
+                               parse_mode=ParseMode.HTML, reply_markup=accounts_keyboard(owned))
+
+
+async def account_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.callback_query or not ensure_private_chat(update) or not update.effective_user:
+        return
+    await update.callback_query.answer()
+    _, action, tag = (update.callback_query.data or "").split(":", 2)
+    storage: BindingsStorage = context.application.bot_data["storage"]
+    group_id, actor = settings.clan_group_id or 0, update.effective_user.id
+    owned = storage.get_bindings_for_user(group_id, actor)
+    selected = next((binding for binding in owned if binding.coc_player_tag == tag), None)
+    if action == "cancel":
+        await accounts(update, context)
+        return
+    if not selected:
+        await update.callback_query.edit_message_text("Аккаунт не принадлежит тебе.")
+        return
+    if action == "primary":
+        storage.set_primary(group_id, actor, tag)
+    elif action == "cwl":
+        next_state = {"unknown": "in", "in": "out", "out": "unknown"}[selected.cwl_opt_in]
+        storage.set_cwl_opt_in(group_id, actor, tag, next_state)
+    elif action == "delete":
+        await update.callback_query.edit_message_text(
+            f"Удалить игровую привязку {tag}? В Telegram-группе участник останется.",
+            reply_markup=delete_confirmation(tag),
+        )
+        return
+    elif action == "confirm":
+        storage.delete_player_binding(group_id, tag, requester_id=actor)
+    await accounts(update, context)
+
+
+async def primary_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not ensure_private_chat(update) or not update.effective_user:
+        return
+    if len(context.args) != 1:
+        await update.message.reply_text("Используй /primary #ТЕГ")
         return
     try:
-        if not ensure_private_chat(update):
-            await update.message.reply_text("Please use /unbind in a private chat with the bot.")
-            return
-        storage: BindingsStorage = context.application.bot_data["storage"]
-        removed = storage.delete_binding(settings.clan_group_id or 0, update.effective_user.id)
-    except Exception:  # noqa: BLE001
-        logger.exception("Failed to handle /unbind")
-        await update.message.reply_text("Unexpected error occurred. Please try again.")
+        tag = normalize_tag(context.args[0])
+    except InvalidTagError:
+        await update.message.reply_text("Некорректный тег.")
         return
-    if removed:
-        mention = format_mention(update.effective_user.id, update.effective_user.full_name)
-        message = f"Removed binding for {mention}."
+    storage: BindingsStorage = context.application.bot_data["storage"]
+    if storage.set_primary(settings.clan_group_id or 0, update.effective_user.id, tag):
+        await update.message.reply_text(f"⭐ {tag} теперь основной аккаунт.")
     else:
-        message = "No binding found for your account."
+        await update.message.reply_text("Этот тег не привязан к тебе.")
+
+
+async def cwl_opt_in(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Local bot declaration for CWL; cannot alter in-game Supercell preferences."""
+    if not update.message or not ensure_private_chat(update) or not update.effective_user:
+        return
+    if not context.args or context.args[-1].lower() not in {"in", "out", "unknown"}:
+        await update.message.reply_text("Используй /cwlopt in|out или /cwlopt #ТЕГ in|out|unknown")
+        return
+    status = context.args[-1].lower()
+    storage: BindingsStorage = context.application.bot_data["storage"]
+    owner = update.effective_user.id
+    tag = None
+    if len(context.args) == 1:
+        account = storage.get_binding(settings.clan_group_id or 0, owner)
+        tag = account.coc_player_tag if account else None
+    elif len(context.args) == 2:
+        try:
+            tag = normalize_tag(context.args[0])
+        except InvalidTagError:
+            pass
+    if not tag:
+        await update.message.reply_text("Тег не найден. Сначала /bind.")
+        return
+    if storage.set_cwl_opt_in(settings.clan_group_id or 0, owner, tag, status):
+        await update.message.reply_text(f"🏆 Заявка на ЛВК для {tag}: {status}.")
+    else:
+        await update.message.reply_text("Нельзя менять заявку для чужого аккаунта.")
+
+
+async def unlink_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Captain-only deletion, with a second explicit confirmation callback."""
+    if not update.message or not ensure_private_chat(update):
+        return
+    if not await has_captain_access(update, context):
+        await update.message.reply_text("Только для лидера или соруководителя.")
+        return
+    if len(context.args) != 1:
+        await update.message.reply_text("Используй /unlink #ТЕГ")
+        return
+    try:
+        tag = normalize_tag(context.args[0])
+    except InvalidTagError:
+        await update.message.reply_text("Неверный игровой тег.")
+        return
     await update.message.reply_text(
-        message,
-        parse_mode=ParseMode.HTML,
-        disable_web_page_preview=True,
+        f"Удалить привязку {tag} из базы? Участник останется в Telegram-группе.",
+        reply_markup=delete_confirmation(tag, admin=True),
+    )
+
+
+async def unlink_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.callback_query:
+        return
+    await update.callback_query.answer()
+    _, action, tag = (update.callback_query.data or "").split(":", 2)
+    if action == "cancel":
+        await update.callback_query.edit_message_text("Удаление отменено.")
+        return
+    if not await has_captain_access(update, context):
+        await update.callback_query.edit_message_text("Нет прав руководителя клана.")
+        return
+    storage: BindingsStorage = context.application.bot_data["storage"]
+    deleted = storage.delete_player_binding(
+        settings.clan_group_id or 0, tag,
+        requester_id=update.effective_user.id, administrator=True,
+    )
+    await update.callback_query.edit_message_text(
+        f"{'Привязка удалена' if deleted else 'Привязка не найдена'}: {tag}."
+    )
+
+
+async def manual_last_seen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Captain's human observation of CoC online status, not API-provided lastSeen."""
+    if not update.message or not ensure_private_chat(update):
+        return
+    if not await has_captain_access(update, context):
+        await update.message.reply_text("Только руководитель клана может отмечать последнее посещение.")
+        return
+    args = context.args or []
+    if len(args) not in {2, 3}:
+        await update.message.reply_text(
+            "Используй /lastseen #ТЕГ YYYY-MM-DD HH:MM (Берлин) или /lastseen #ТЕГ clear"
+        )
+        return
+    try:
+        tag = normalize_tag(args[0])
+        if args[1].lower() == "clear" and len(args) == 2:
+            observed = None
+        else:
+            stamp = datetime.strptime(" ".join(args[1:]), "%Y-%m-%d %H:%M")
+            observed_date = stamp.replace(tzinfo=ZoneInfo("Europe/Berlin"))
+            if observed_date.astimezone(timezone.utc) > datetime.now(timezone.utc):
+                raise ValueError("Cannot record a future login")
+            observed = observed_date.astimezone(timezone.utc).isoformat()
+    except (ValueError, InvalidTagError):
+        await update.message.reply_text("Неверный формат или дата в будущем.")
+        return
+    storage: BindingsStorage = context.application.bot_data["storage"]
+    saved = storage.set_manual_last_seen(settings.clan_group_id or 0, tag, observed)
+    await update.message.reply_text(
+        f"{'Ручная отметка сохранена' if saved else 'Игрок не привязан'}: {tag}. "
+        "Это наблюдение из игры, НЕ данные CoC API."
+    )
+
+
+async def unbind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not ensure_private_chat(update) or not update.effective_user:
+        return
+    storage: BindingsStorage = context.application.bot_data["storage"]
+    owned = storage.get_bindings_for_user(settings.clan_group_id or 0, update.effective_user.id)
+    if not owned:
+        await update.message.reply_text("Нет привязанных аккаунтов.")
+        return
+    if not context.args:
+        await accounts(update, context)
+        return
+    try:
+        tag = normalize_tag(context.args[0])
+    except InvalidTagError:
+        await update.message.reply_text("Неверный игровой тег.")
+        return
+    if tag not in {b.coc_player_tag for b in owned}:
+        await update.message.reply_text("Ты не владеешь этой привязкой.")
+        return
+    await update.message.reply_text(
+        f"Удалить свой аккаунт {tag} из базы привязок?",
+        reply_markup=delete_confirmation(tag),
     )
 
 
@@ -844,6 +1024,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "menu_nextwar": next_war_analysis,
         "menu_cwl": cwl,
         "menu_progress": progress,
+        "menu_accounts": accounts,
         "menu_captain": captain_report,
         "menu_player": player,
         "menu_profile": player,
@@ -1610,6 +1791,11 @@ async def main() -> None:
     application.add_handler(CommandHandler("ping", ping))
     application.add_handler(CommandHandler("bind", bind))
     application.add_handler(CommandHandler("unbind", unbind))
+    application.add_handler(CommandHandler("accounts", accounts))
+    application.add_handler(CommandHandler("primary", primary_account))
+    application.add_handler(CommandHandler("cwlopt", cwl_opt_in))
+    application.add_handler(CommandHandler("unlink", unlink_admin))
+    application.add_handler(CommandHandler("lastseen", manual_last_seen))
     application.add_handler(CommandHandler("mytag", mytag))
     application.add_handler(CommandHandler("chatid", chatid))
     application.add_handler(CommandHandler("grouplink", grouplink))
@@ -1617,6 +1803,8 @@ async def main() -> None:
     application.add_handler(CommandHandler("settings", settings_info))
     application.add_handler(CallbackQueryHandler(bind_start, pattern="^bind_start$"))
     application.add_handler(CallbackQueryHandler(bind_cancel, pattern="^bind_cancel$"))
+    application.add_handler(CallbackQueryHandler(account_callback, pattern=r"^acct:(primary|cwl|delete|confirm|cancel):"))
+    application.add_handler(CallbackQueryHandler(unlink_admin_callback, pattern=r"^admin:(confirm|cancel):"))
     application.add_handler(CallbackQueryHandler(roster_callback, pattern=r"^pick:(manual|page|player):[0-9]+$"))
     application.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
     application.add_handler(CallbackQueryHandler(lineup_callback, pattern=r"^lineup:(main|bench|details|about|player|refresh):[0-9]+$"))
