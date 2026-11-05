@@ -1,12 +1,12 @@
 name: Clash of Clans Telegram Bot
-version: "0.1.0"
+version: "0.2.1"
 slug: coc_telegram
 description: Independent Clash of Clans Telegram bot with war analytics
-url: https://github.com/Alexey3476/CoC_Telegramm
+url: https://github.com/Beerlogger01/CoC_Telegramm
 arch:
   - aarch64
   - amd64
-image: ghcr.io/alexey3476/coc-telegram
+image: ghcr.io/beerlogger01/coc-telegram
 startup: application
 boot: auto
 init: false
@@ -25,6 +25,16 @@ options:
   cache_ttl_seconds: 180
   request_timeout_seconds: 20
   debug: false
+  score_weight_strength: 35
+  score_weight_attendance: 30
+  score_weight_attack: 25
+  score_weight_preference: 10
+  inactive_after_hours: 48
+  max_accounts_per_owner: 1
+  min_kick_wars: 3
+  min_kick_missed_attacks: 3
+  min_promotion_wars: 5
+  min_cwl_bonus_wars: 3
 schema:
   telegram_bot_token: password
   coc_token: password
@@ -39,3 +49,13 @@ schema:
   cache_ttl_seconds: int(30,3600)
   request_timeout_seconds: int(5,120)
   debug: bool
+  score_weight_strength: int(0,100)
+  score_weight_attendance: int(0,100)
+  score_weight_attack: int(0,100)
+  score_weight_preference: int(0,100)
+  inactive_after_hours: int(24,720)
+  max_accounts_per_owner: int(1,5)
+  min_kick_wars: int(1,30)
+  min_kick_missed_attacks: int(1,30)
+  min_promotion_wars: int(1,30)
+  min_cwl_bonus_wars: int(1,7)

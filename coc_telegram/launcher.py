@@ -37,6 +37,16 @@ def build_env(options_path: Path) -> dict[str, str]:
         "cache_ttl_seconds": "CACHE_TTL_SECONDS",
         "request_timeout_seconds": "REQUEST_TIMEOUT_SECONDS",
         "debug": "DEBUG",
+        "score_weight_strength": "SCORE_WEIGHT_STRENGTH",
+        "score_weight_attendance": "SCORE_WEIGHT_ATTENDANCE",
+        "score_weight_attack": "SCORE_WEIGHT_ATTACK",
+        "score_weight_preference": "SCORE_WEIGHT_PREFERENCE",
+        "inactive_after_hours": "INACTIVE_AFTER_HOURS",
+        "max_accounts_per_owner": "MAX_ACCOUNTS_PER_OWNER",
+        "min_kick_wars": "MIN_KICK_WARS",
+        "min_kick_missed_attacks": "MIN_KICK_MISSED_ATTACKS",
+        "min_promotion_wars": "MIN_PROMOTION_WARS",
+        "min_cwl_bonus_wars": "MIN_CWL_BONUS_WARS",
     }
     for name, key in fields.items():
         value = options.get(name)

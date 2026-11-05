@@ -38,6 +38,18 @@ class Settings(BaseSettings):
     war_reminder_interval_minutes: int = 15
     lex_coc_tag: str | None = None
 
+    score_weight_strength: int = 35
+    score_weight_attendance: int = 30
+    score_weight_attack: int = 25
+    score_weight_preference: int = 10
+    inactive_after_hours: int = 48
+    max_accounts_per_owner: int = 1
+    min_kick_wars: int = 3
+    min_kick_missed_attacks: int = 3
+    min_promotion_wars: int = 5
+    min_cwl_bonus_wars: int = 3
+
+
     @field_validator("clan_group_id", mode="before")
     @classmethod
     def parse_clan_group_id(cls, value: object) -> int | None:
@@ -127,4 +139,8 @@ def validate_settings() -> list[str]:
         errors.append(
             f"CLAN_GROUP_ID must be an integer (raw={describe_value(raw_group_id)})"
         )
+    weights = (settings.score_weight_strength, settings.score_weight_attendance,
+               settings.score_weight_attack, settings.score_weight_preference)
+    if sum(weights) != 100 or any(weight < 0 for weight in weights):
+        errors.append("Selection weight percentages must sum to 100")
     return errors

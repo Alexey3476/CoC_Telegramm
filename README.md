@@ -1,6 +1,26 @@
 # Clash of Clans Telegram Home Server
 
-A lightweight home-server stack that exposes a FastAPI backend for Clash of Clans data and a Telegram bot that consumes it. All Clash of Clans API traffic is centralized in the backend with Redis caching to protect rate limits.
+A lightweight home-server stack that exposes a FastAPI backend for Clash of Clans data and a Telegram bot that consumes it. All Clash of Clans API traffic is centralized in the backend with bounded in-memory caching to protect rate limits.
+
+## Home Assistant add-on v0.2.1 (release instructions)
+
+Update the Home Assistant add-on **only after** merging this branch into Beerlogger01/CoC_Telegramm/main and after the GHCR 0.2.1 image has published successfully.
+Take a Home Assistant add-on backup before upgrade. Existing 0.2.0 bindings.db rows migrate to a multi-account SQLite schema without losing ownership, with rollback rather than silent data deletion on duplicate legacy tags.
+
+Private Telegram commands:
+- `/accounts`: show all your linked CoC accounts, switch the primary account, set CWL participation and request deletion of a binding.
+- `/bind`: verify and add another player tag using the in-game verification token.
+- `/primary #TAG`: choose the primary linked account.
+- `/cwlopt #TAG in|out|unknown`: declare CWL participation in this bot. This is separate from the CoC game's regular war preference.
+- `/unbind #TAG`: remove your specific linked account after confirmation.
+- `/nextwar`: weighted lineup calculator, normal war / CWL, evidence coverage and reserve categories.
+
+Verified leader/co-leader private commands:
+- `/unlink #TAG`: remove a player's binding from the database with confirmation. This does **not** remove anyone from the Telegram group.
+- `/lastseen #TAG 2d`: record the last online status manually seen in the game; also supports `48h`, a Berlin date/time or `clear`.
+- `/nextwar`: additionally displays private review candidates for kicks, promotions and CWL bonus medals.
+
+Important limitations: The official Clash of Clans API does not expose last login. Player inactivity over 48 hours is only determined from a leader's manually entered observation. CoC warPreference is read-only through the API, and the CWL opt-in here is stored locally. The bot never kicks a player, promotes a member or allocates bonus medals automatically.
 
 ## Architecture
 
@@ -11,12 +31,11 @@ Backend (FastAPI)
     ↓
 Clash of Clans API
     ↓
-Redis (cache layer)
 ```
 
 ## Features
 
-- FastAPI backend with Redis caching
+- FastAPI backend with bounded in-memory TTL caching
 - Telegram bot commands for clan, player, and war data
 - Player tag bindings with war reminder mentions
 - Dockerized deployment with docker-compose
@@ -46,7 +65,6 @@ cp .env.example .env
 - `COC_TOKEN`: Clash of Clans API token
 - `COC_CLAN_TAG`: Default clan tag (e.g. `#ABCD1234`)
 - `TELEGRAM_BOT_TOKEN`: Telegram bot token
-- `REDIS_URL`: Redis connection string (default in `.env.example`)
 - `BACKEND_URL`: Backend service URL used by the bot
 - `BINDINGS_DB_PATH`: SQLite path for bindings (default `/data/bindings.db`)
 - `CLAN_GROUP_ID`: Telegram chat ID for the private clan group
