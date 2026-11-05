@@ -22,3 +22,7 @@ Player associations are stored in `/data/bindings.db` and survive restarts; back
 ## Images and updates
 
 The version in `config.yaml` matches the tag on `ghcr.io/alexey3476/coc-telegram`. The image must be **published and public** on GHCR before Home Assistant can install it. The GitHub Actions workflow publishes multi-architecture images after code is merged to `main` and tests pass. Pull requests run a build without publishing.
+
+## War analytics
+
+War snapshots are sampled locally every five minutes, including clan war league rounds. The bot only uses captured, completed wars for attack reliability: missing attacks, stars and town hall of attacked bases. Historic player-level attacks are not available from the regular public war log. Until completed snapshots exist, reliability remains **unknown** (not zero). The public API also does not reliably report player last-online time or Clan Games individual progress.

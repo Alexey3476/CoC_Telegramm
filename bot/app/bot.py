@@ -248,34 +248,25 @@ def bind_cancel_keyboard() -> InlineKeyboardMarkup:
 
 
 def main_menu_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
-    """Main menu with all bot functions."""
-    # Check if this is Lex's menu
-    is_lex = False
-    if user_id and settings.lex_coc_tag:
-        storage: BindingsStorage = None  # Will be populated if needed
-        try:
-            # We need to check storage, but this is a function without context
-            # So we'll handle it in the menu handler instead
-            pass
-        except:  # noqa: BLE001
-            pass
-    
-    buttons = [
+    """Compact main menu with callbacks supported by the bot."""
+    return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("👥 Топ игроков", callback_data="menu_topplayers"),
-            InlineKeyboardButton("⚔️ Статистика клана", callback_data="menu_clanstats"),
+            InlineKeyboardButton("🏛️ Рейды", callback_data="menu_raids"),
         ],
         [
-            InlineKeyboardButton("🏘️ Информация о клане", callback_data="menu_clan"),
+            InlineKeyboardButton("🎮 Игры кланов", callback_data="menu_games"),
+            InlineKeyboardButton("🏘️ Клан", callback_data="menu_clan"),
+        ],
+        [
             InlineKeyboardButton("📊 Война", callback_data="menu_war"),
+            InlineKeyboardButton("⚔️ Следующая война", callback_data="menu_nextwar"),
         ],
         [
-            InlineKeyboardButton("👤 Информация об игроке", callback_data="menu_player"),
+            InlineKeyboardButton("👤 Игрок", callback_data="menu_player"),
             InlineKeyboardButton("⚙️ Привязка", callback_data="bind_start"),
         ],
-    ]
-    
-    return InlineKeyboardMarkup(buttons)
+    ])
 
 
 async def send_or_edit_message(update: Update, text: str, parse_mode: str = ParseMode.MARKDOWN, reply_markup = None):
@@ -1373,7 +1364,7 @@ async def top_players(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             msg = "🏆 *Активность клана*\n\n"
             
             # Most active
-            msg += "⭐ *Самые активные игроки:*\n"
+            msg += "⭐ *Больше всего доната / атак (не время онлайн):*\n"
             for i, player in enumerate(most_active, 1):
                 name = player.get("name", "Unknown")
                 donations = player.get("donations", 0)
@@ -1385,7 +1376,7 @@ async def top_players(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             msg += "\n"
             
             # Least active
-            msg += "📉 *Самые неактивные игроки:*\n"
+            msg += "📉 *Меньше всего доната / атак (не время онлайн):*\n"
             for i, player in enumerate(least_active, 1):
                 name = player.get("name", "Unknown")
                 donations = player.get("donations", 0)
@@ -1482,7 +1473,8 @@ async def clan_games(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             
             current_games = payload.get("currentGames")
             if not current_games:
-                message = "ℹ️ Игры кланов не проводятся в данный момент."
+                message = ("ℹ️ Clash of Clans API не предоставляет данные об Играх кланов."
+                           if payload.get("unsupported") else "ℹ️ Информация об играх недоступна.")
                 await send_or_edit_message(update, message)
                 return
             

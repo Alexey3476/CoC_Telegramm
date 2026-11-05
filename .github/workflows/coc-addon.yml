@@ -33,6 +33,7 @@ jobs:
       - run: python -m compileall -q backend bot coc_telegram
       - run: PYTHONPATH=backend python -m pytest backend/tests -q
       - run: PYTHONPATH=bot python -m pytest bot/tests -q
+      - run: PYTHONPATH=. python -m pytest coc_telegram/tests -q
 
   build:
     needs: test
