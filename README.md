@@ -1,6 +1,6 @@
 # Clash of Clans Telegram Home Server
 
-A lightweight home-server stack that exposes a FastAPI backend for Clash of Clans data and a Telegram bot that consumes it. All Clash of Clans API traffic is centralized in the backend with Redis caching to protect rate limits.
+A lightweight home-server stack that exposes a FastAPI backend for Clash of Clans data and a Telegram bot that consumes it. All Clash of Clans API traffic is centralized in the backend with bounded in-memory caching to protect rate limits.
 
 ## Architecture
 
@@ -11,12 +11,11 @@ Backend (FastAPI)
     ↓
 Clash of Clans API
     ↓
-Redis (cache layer)
 ```
 
 ## Features
 
-- FastAPI backend with Redis caching
+- FastAPI backend with bounded in-memory TTL caching
 - Telegram bot commands for clan, player, and war data
 - Player tag bindings with war reminder mentions
 - Dockerized deployment with docker-compose
@@ -46,7 +45,6 @@ cp .env.example .env
 - `COC_TOKEN`: Clash of Clans API token
 - `COC_CLAN_TAG`: Default clan tag (e.g. `#ABCD1234`)
 - `TELEGRAM_BOT_TOKEN`: Telegram bot token
-- `REDIS_URL`: Redis connection string (default in `.env.example`)
 - `BACKEND_URL`: Backend service URL used by the bot
 - `BINDINGS_DB_PATH`: SQLite path for bindings (default `/data/bindings.db`)
 - `CLAN_GROUP_ID`: Telegram chat ID for the private clan group

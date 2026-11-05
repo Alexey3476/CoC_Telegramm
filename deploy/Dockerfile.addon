@@ -11,4 +11,6 @@ RUN pip install --no-cache-dir -r /tmp/backend-requirements.txt -r /tmp/bot-requ
 COPY backend /opt/backend
 COPY bot /opt/bot
 COPY coc_telegram/launcher.py /opt/launcher.py
+RUN useradd --create-home --uid 1000 coc && chown -R coc:coc /opt /data
+USER coc
 CMD ["python", "/opt/launcher.py"]

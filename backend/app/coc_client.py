@@ -175,8 +175,6 @@ async def get_clan_members(client: httpx.AsyncClient, redis: TTLCache, limit: in
 
 async def get_clan_activity_report(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
     """Get comprehensive clan activity report."""
-    clan_tag = normalize_tag(settings.coc_clan_tag)
-    
     # Get clan data
     clan_data = await get_clan(client, redis)
     members = clan_data.get("memberList", [])
@@ -262,72 +260,37 @@ async def get_clan_raids(client: httpx.AsyncClient, redis: TTLCache) -> dict[str
     cache_key = f"raids:{clan_tag}"
     url = f"{settings.coc_api_base}/clans/{encode_tag(clan_tag)}/capitalraidseasons"
     
-    try:
-        data = await fetch_with_cache(client, redis, cache_key, url)
-        
-        # Get current raid if available
-        items = data.get("items", [])
-        if not items:
-            return {"currentRaid": None}
-        
-        # Most recent raid is first
-        current = items[0]
-        state = current.get("state", "unknown")
-        
-        # Parse dates
-        start_time = current.get("startTime", "N/A")
-        end_time = current.get("endTime", "N/A")
-        
-        raid_info = {
-            "state": state,
-            "capitalName": "Capital Raid",
-            "startTime": start_time,
-            "endTime": end_time,
-        }
-        
-        # If ongoing, include resource details
-        if state == "ongoing":
-            clan_capital = current.get("clan", {})
-            resources = clan_capital.get("resources", [])
-            raid_info["clan"] = {"resources": resources}
-        
-        return {"currentRaid": raid_info}
-    except Exception:
-        logger.exception("Failed to get clan raids")
+    data = await fetch_with_cache(client, redis, cache_key, url)
+    items = data.get("items", [])
+    if not items:
         return {"currentRaid": None}
 
+    current = items[0]
+    raid_info = {
+        "state": current.get("state", "unknown"),
+        "capitalName": "Capital Raid",
+        "startTime": current.get("startTime", "N/A"),
+        "endTime": current.get("endTime", "N/A"),
+    }
+    if raid_info["state"] == "ongoing":
+        resources = (current.get("clan") or {}).get("resources", [])
+        raid_info["clan"] = {"resources": resources}
+    return {"currentRaid": raid_info}
+
 async def get_clan_games(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
-    """Get clan games information."""
+    """Report that Clan Games progress is not exposed by the public API."""
     clan_tag = normalize_tag(settings.coc_clan_tag)
     cache_key = f"games:{clan_tag}"
     url = f"{settings.coc_api_base}/clans/{encode_tag(clan_tag)}"
     
-    try:
-        data = await fetch_with_cache(client, redis, cache_key, url)
-        
-        # The official clan payload does not consistently expose Clan Games progress.
-        clan_games = data.get("clanGames", {})
-        if not clan_games:
-            return {"currentGames": None, "unsupported": True}
-        
-        state = clan_games.get("state", "notInProgress")
-        start_time = clan_games.get("startTime", "N/A")
-        end_time = clan_games.get("endTime", "N/A")
-        
-        games_info = {
-            "state": state,
-            "startTime": start_time,
-            "endTime": end_time,
+    data = await fetch_with_cache(client, redis, cache_key, url)
+    if not data.get("clanGames"):
+        return {
+            "currentGames": None,
+            "unsupported": True,
+            "message": "Clan Games progress is not available in the public API.",
         }
-        
-        # If in progress, include score details
-        if state == "inProgress":
-            games_info["score"] = clan_games.get("memberGameInfo", {}).get("totalScore", "N/A")
-        
-        return {"currentGames": games_info}
-    except Exception:
-        logger.exception("Failed to get clan games")
-        return {"currentGames": None}
+    return {"currentGames": data["clanGames"], "unsupported": False}
 
 
 async def get_player_activity(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:

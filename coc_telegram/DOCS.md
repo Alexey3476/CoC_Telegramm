@@ -4,7 +4,7 @@ This add-on does not alter or share settings with the Home Assistant smart-home 
 
 ## Installation
 
-1. In Home Assistant **Settings → Apps → Install app → ⋮ → Repositories**, add `https://github.com/Alexey3476/CoC_Telegramm`.
+1. In Home Assistant **Settings → Apps → Install app → ⋮ → Repositories**, add `https://github.com/Beerlogger01/CoC_Telegramm`.
 2. Refresh and select **Clash of Clans Telegram Bot**.
 3. Enter `telegram_bot_token` (BotFather), `coc_token` (developer.clashofclans.com), and `coc_clan_tag` (including #).
 4. Start the app and inspect its logs.
@@ -21,7 +21,7 @@ Player associations are stored in `/data/bindings.db` and survive restarts; back
 
 ## Images and updates
 
-The version in `config.yaml` matches the tag on `ghcr.io/alexey3476/coc-telegram`. The image must be **published and public** on GHCR before Home Assistant can install it. The GitHub Actions workflow publishes multi-architecture images after code is merged to `main` and tests pass. Pull requests run a build without publishing.
+The version in `config.yaml` matches the tag on `ghcr.io/beerlogger01/coc-telegram`. The image must be **published and public** on GHCR before Home Assistant can install it. The GitHub Actions workflow publishes multi-architecture images after code is merged to `main` and tests pass. Pull requests run a build without publishing.
 
 ## War analytics
 
