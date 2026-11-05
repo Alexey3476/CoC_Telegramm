@@ -24,6 +24,7 @@ from telegram.helpers import escape_markdown
 from telegram.error import BadRequest
 
 from app.backend_client import build_url, fetch_json
+from app.polls import PollStore
 from app.bindings_storage import Binding, BindingsStorage
 from app.settings import env_snapshot, settings, settings_snapshot, validate_settings
 from app.ui import format_war_message, format_raid_message, lineup_message, lineup_keyboard, format_cwl_message
@@ -295,6 +296,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/hall — зал славы клана\n"
         "/cwl — семь раундов и место ЛВК\n"
         "/ranking war|cwl — рейтинг всех игроков\n"
+        "/poll — голосование (лидер/соруководитель, личный чат)\n"
         "/progress — развитие любого своего аккаунта\n"
         "/captain — отчёт для руководства клана\n"
         "/clan — данные клана\n"
@@ -336,6 +338,7 @@ async def sync_bot_commands(bot) -> None:
         base + [BotCommand("bind", "🔐 Добавить аккаунт"),
                 BotCommand("accounts", "👥 Мои аккаунты"),
                 BotCommand("weights", "📊 Веса отбора"),
+                BotCommand("poll", "🗳 Голосование руководства"),
                 BotCommand("grouplink", "🔗 Ссылка в группу")],
         scope=BotCommandScopeAllPrivateChats(),
     )
@@ -456,6 +459,7 @@ async def staff(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
          InlineKeyboardButton("⚠️ Дисциплина", callback_data="staff:kick")],
         [InlineKeyboardButton("🎖 Бонусы CWL", callback_data="staff:bonus"),
          InlineKeyboardButton("📊 Отчёт", callback_data="menu_captain")],
+        [InlineKeyboardButton("🗳 Создать голосование", callback_data="menu_poll")],
         [InlineKeyboardButton("⚖️ Веса", callback_data="menu_weights"),
          InlineKeyboardButton("👥 Привязки", callback_data="menu_accounts")],
         [InlineKeyboardButton("🏠 Штаб", callback_data="menu_home")],
@@ -1240,6 +1244,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "menu_progress": progress,
         "menu_captain": captain_report,
         "menu_staff": staff,
+        "menu_poll": poll_create,
         "menu_player": player,
         "menu_profile": accounts,
         "menu_accounts": accounts,
@@ -1283,6 +1288,8 @@ async def private_text_router(update: Update, context: ContextTypes.DEFAULT_TYPE
     """Ensure a private message is processed only once."""
     if context.user_data.get("awaiting_tag") or context.user_data.get("awaiting_player_token"):
         await capture_tag(update, context)
+    elif context.user_data.get("poll_draft"):
+        await poll_private_text(update, context)
     else:
         await handle_private_message(update, context)
 
@@ -2018,6 +2025,219 @@ async def growth_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await show_owned_progress(update, context)
 
 
+def poll_keyboard(poll: dict) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(
+            f"{str(option)[:45]} · {poll['votes'][i]}",
+            callback_data=f"poll:vote:{poll['id']}:{i}",
+        )]
+        for i, option in enumerate(poll["options"])
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def poll_text(poll: dict, completed: bool = False) -> str:
+    question = html.escape(str(poll["question"]))
+    lines = [
+        f"🗳 <b>{question}</b>",
+        f"{'✅ Голосование завершено' if completed else '⏳ Голосование открыто'}",
+        f"Голосов: {poll['totalVotes']}",
+        "",
+    ]
+    for i, option in enumerate(poll["options"]):
+        count = poll["votes"][i]
+        share = 100 * count / poll["totalVotes"] if poll["totalVotes"] else 0
+        lines.append(f"{i + 1}. {html.escape(str(option))}: {count} ({share:.1f}%)")
+    if completed:
+        highest = max(poll["votes"], default=0)
+        if highest:
+            winners = [html.escape(str(option)) for i, option in enumerate(poll["options"])
+                       if poll["votes"][i] == highest]
+            lines.append("\n🏆 Итог: " + ", ".join(winners))
+        else:
+            lines.append("\nНикто не проголосовал.")
+    else:
+        ends = datetime.fromisoformat(poll["ends_at"]).astimezone(ZoneInfo("Europe/Berlin"))
+        lines.append(f"\n⏰ До {ends:%d.%m.%Y %H:%M} (Берлин)")
+        lines.append("Голосовать могут подтверждённые участники клана. Свой выбор можно изменить.")
+    return "\n".join(lines)
+
+
+def poll_draft_keyboard(can_publish: bool) -> InlineKeyboardMarkup:
+    rows = []
+    if can_publish:
+        rows.append([InlineKeyboardButton("✅ Опубликовать в клане", callback_data="poll:draft:publish")])
+    rows.append([InlineKeyboardButton("❌ Отмена", callback_data="poll:draft:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def poll_create(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Private wizard; only a currently verified in-game leader/co-leader."""
+    if not ensure_private_chat(update) or not await has_captain_access(update, context):
+        await send_or_edit_message(update, "🛡️ Создавать голосования может только руководство CoC в личном чате.")
+        return
+    if settings.clan_group_id is None:
+        await send_or_edit_message(update, "Не задан CLAN_GROUP_ID, публиковать голосования некуда.")
+        return
+    context.user_data["poll_draft"] = {"step": "question", "options": []}
+    await send_or_edit_message(
+        update, "🗳 Напиши вопрос для голосования (до 240 символов).",
+        reply_markup=poll_draft_keyboard(False),
+    )
+
+
+async def poll_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not ensure_private_chat(update):
+        return
+    draft = context.user_data.get("poll_draft")
+    if not draft:
+        return
+    value = (update.message.text or "").strip()
+    if draft.get("step") == "question":
+        if not 1 <= len(value) <= 240:
+            await update.message.reply_text("Вопрос должен содержать от 1 до 240 символов.")
+            return
+        draft["question"] = value
+        draft["step"] = "duration"
+        choices = [[InlineKeyboardButton(f"{h} ч", callback_data=f"poll:duration:{h}")
+                    for h in (1, 6)],
+                   [InlineKeyboardButton(f"{h} ч", callback_data=f"poll:duration:{h}")
+                    for h in (24, 72)],
+                   [InlineKeyboardButton("❌ Отмена", callback_data="poll:draft:cancel")]]
+        await update.message.reply_text(
+            "⏱ Выбери длительность голосования:", reply_markup=InlineKeyboardMarkup(choices),
+        )
+        return
+    if draft.get("step") == "duration":
+        await update.message.reply_text("Выбери длительность кнопкой выше.")
+        return
+    if draft.get("step") != "options":
+        return
+    if not 1 <= len(value) <= 80:
+        await update.message.reply_text("Вариант ответа должен содержать от 1 до 80 символов.")
+        return
+    if value.casefold() in {v.casefold() for v in draft["options"]}:
+        await update.message.reply_text("Такой вариант уже есть.")
+        return
+    if len(draft["options"]) >= 8:
+        await update.message.reply_text("Максимум 8 вариантов. Нажми «Опубликовать».")
+        return
+    draft["options"].append(value)
+    rows = "\n".join(f"{i}. {option}" for i, option in enumerate(draft["options"], 1))
+    await update.message.reply_text(
+        "Варианты:\n" + rows + "\n\nНапиши следующий вариант или опубликуй (минимум 2).",
+        reply_markup=poll_draft_keyboard(len(draft["options"]) >= 2),
+    )
+
+
+async def poll_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.callback_query or not update.effective_user:
+        return
+    parts = (update.callback_query.data or "").split(":")
+    if parts[1] == "vote":
+        if not ensure_group_chat(update) or update.effective_chat.id != settings.clan_group_id:
+            await update.callback_query.answer("Это голосование другого чата.", show_alert=True)
+            return
+        storage: BindingsStorage = context.application.bot_data["storage"]
+        accounts = storage.get_user_accounts(settings.clan_group_id, update.effective_user.id)
+        if not accounts:
+            await update.callback_query.answer("Сначала подтверди CoC аккаунт в личке бота.", show_alert=True)
+            return
+        try:
+            async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+                roster = await fetch_json(client, "/clan")
+            active_tags = {m.get("tag") for m in roster.get("memberList") or []}
+            if not any(a.coc_player_tag in active_tags for a in accounts):
+                await update.callback_query.answer("Аккаунт сейчас не состоит в клане.", show_alert=True)
+                return
+        except (httpx.HTTPStatusError, httpx.RequestError):
+            await update.callback_query.answer("Не удалось проверить состав клана. Повтори.", show_alert=True)
+            return
+        store: PollStore = context.application.bot_data["poll_store"]
+        try:
+            poll = store.vote(int(parts[2]), settings.clan_group_id,
+                              update.effective_user.id, int(parts[3]))
+        except ValueError as exc:
+            await update.callback_query.answer(str(exc), show_alert=True)
+            return
+        await update.callback_query.answer("✅ Голос записан. Выбор можно изменить.")
+        try:
+            await context.bot.edit_message_text(
+                chat_id=poll["group_id"], message_id=poll["message_id"],
+                text=poll_text(poll), parse_mode=ParseMode.HTML,
+                reply_markup=poll_keyboard(poll),
+            )
+        except BadRequest:
+            pass  # Concurrent vote or no visible change; the vote is in SQLite.
+        return
+    if not ensure_private_chat(update):
+        await update.callback_query.answer("Мастер доступен только в личном чате.", show_alert=True)
+        return
+    await update.callback_query.answer()
+    draft = context.user_data.get("poll_draft")
+    if parts[1] == "draft" and parts[2] == "cancel":
+        context.user_data.pop("poll_draft", None)
+        await send_or_edit_message(update, "Голосование отменено.")
+        return
+    if not draft or not await has_captain_access(update, context):
+        await send_or_edit_message(update, "Черновик или права устарели. Используй /poll.")
+        return
+    if parts[1] == "duration":
+        if draft.get("step") != "duration" or int(parts[2]) not in {1, 6, 24, 72}:
+            return
+        draft["hours"] = int(parts[2])
+        draft["step"] = "options"
+        await send_or_edit_message(
+            update, "📝 Напиши первый вариант ответа. Затем второй и остальные (до 8).",
+            reply_markup=poll_draft_keyboard(False),
+        )
+        return
+    if parts[1] == "draft" and parts[2] == "publish":
+        if draft.get("step") != "options" or len(draft["options"]) < 2:
+            await send_or_edit_message(update, "Для публикации нужно минимум 2 варианта.")
+            return
+        store: PollStore = context.application.bot_data["poll_store"]
+        deadline = datetime.now(timezone.utc) + timedelta(hours=draft["hours"])
+        try:
+            poll = store.create(update.effective_user.id, settings.clan_group_id,
+                                draft["question"], draft["options"], deadline)
+            sent = await context.bot.send_message(
+                chat_id=settings.clan_group_id, text=poll_text(poll),
+                parse_mode=ParseMode.HTML, reply_markup=poll_keyboard(poll),
+            )
+            store.set_message(poll["id"], sent.message_id)
+        except Exception:
+            logger.exception("Could not publish clan vote")
+            await send_or_edit_message(update, "Не удалось опубликовать голосование. Проверь права бота в группе.")
+            return
+        context.user_data.pop("poll_draft", None)
+        await send_or_edit_message(update, "✅ Голосование опубликовано в группе клана.")
+
+
+async def poll_deadline_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Retry a failed results delivery instead of silently losing the outcome."""
+    store: PollStore = context.application.bot_data["poll_store"]
+    for poll in store.due():
+        try:
+            await context.bot.edit_message_text(
+                chat_id=poll["group_id"], message_id=poll["message_id"],
+                text=poll_text(poll, completed=True), parse_mode=ParseMode.HTML,
+            )
+        except BadRequest:
+            pass  # Original message deleted or already updated.
+        except Exception:
+            logger.warning("Poll %s message update failed", poll["id"])
+        try:
+            await context.bot.send_message(
+                chat_id=poll["group_id"], text=poll_text(poll, completed=True),
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception:
+            logger.exception("Cannot announce poll result %s", poll["id"])
+            continue
+        store.finish(poll["id"])
+
+
 async def clan_ranking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Clan-wide, two-mode rating for all players, not a trophy leaderboard."""
     args = context.args or []
@@ -2203,6 +2423,7 @@ async def main() -> None:
     application = ApplicationBuilder().token(settings.telegram_bot_token).request(request).build()
 
     application.bot_data["storage"] = BindingsStorage(settings.bindings_db_path)
+    application.bot_data["poll_store"] = PollStore(settings.polls_db_path)
     application.bot_data["war_outcomes"] = WarAnnouncementStore(settings.bindings_db_path)
 
     application.add_handler(MessageHandler(filters.COMMAND, log_any_command), group=-1)
@@ -2218,6 +2439,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("nextwar", next_war_analysis))
     application.add_handler(CommandHandler("cwl", cwl))
     application.add_handler(CommandHandler("ranking", clan_ranking))
+    application.add_handler(CommandHandler("poll", poll_create))
     application.add_handler(CommandHandler("progress", progress))
     application.add_handler(CommandHandler("captain", captain_report))
     application.add_handler(CommandHandler("staff", staff))
@@ -2243,6 +2465,7 @@ async def main() -> None:
     application.add_handler(CallbackQueryHandler(roster_callback, pattern=r"^pick:(manual|page|player):[0-9]+$"))
     application.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
     application.add_handler(CallbackQueryHandler(ranking_callback, pattern=r"^rank:(mode:(war|cwl)|page:[0-9]+)$"))
+    application.add_handler(CallbackQueryHandler(poll_callback, pattern=r"^poll:(duration:[0-9]+|draft:(publish|cancel)|vote:[0-9]+:[0-9]+)$"))
     application.add_handler(CallbackQueryHandler(players_callback, pattern=r"^players:(view|page|hall|donate):[0-9]+$"))
     application.add_handler(CallbackQueryHandler(account_callback, pattern=r"^acct:(list|view|primary|delete|confirm|progress):[0-9]+$"))
     application.add_handler(CallbackQueryHandler(growth_callback, pattern=r"^growth:days:(0|7|30)$"))
@@ -2264,6 +2487,11 @@ async def main() -> None:
     )
     application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, verify_new_members))
     application.add_error_handler(handle_handler_exception)
+
+    application.job_queue.run_repeating(
+        poll_deadline_job, interval=timedelta(minutes=1),
+        first=timedelta(minutes=1), name="clan-poll-deadlines",
+    )
 
     if settings.clan_group_id is not None:
         application.job_queue.run_daily(
