@@ -397,6 +397,9 @@ async def get_next_war_analysis(
     members = clan_data.get("memberList", [])
     clan_tag = normalize_tag(settings.coc_clan_tag)
     history_stats = summarize_wars(history.completed(20), clan_tag) if history else {}
+    cwl_history_stats = summarize_wars(
+        [war for war in history.completed(60) if war.get("_source") == "cwl"], clan_tag
+    ) if history else {}
     suggested_size = 15
     try:
         war_data = await get_war(client, redis)
@@ -456,6 +459,7 @@ async def get_next_war_analysis(
             "heroEquipmentScore": equipment_level if profile else None,
             "heroEquipmentCount": len(equipped) if profile else None,
             "history": previous,
+            "cwlHistory": cwl_history_stats.get(tag),
             "historyKnown": previous is not None,
             "observedWars": previous["wars"] if previous else 0,
             "missedAttacks": previous["missedAttacks"] if previous else None,

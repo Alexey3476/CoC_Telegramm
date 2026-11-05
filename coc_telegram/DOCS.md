@@ -38,3 +38,13 @@ War snapshots are sampled locally every five minutes, including clan war league 
 ## Development snapshots
 
 Daily public player-profile snapshots are saved in `/data/player_progress.db` without credentials. `/progress` compares hero, equipment, Town Hall and documented lifetime counters with the previous saved day. No active upgrade timers are inferred.
+
+## v0.2.1 lineup and privacy notes
+- One Telegram identity can own multiple verified game accounts. Existing 0.2.0 bindings migrate transactionally.
+- Regular Clan War opt-in is the CoC API warPreference field, which cannot be changed by this bot.
+- CWL opt-in is a separate, LOCAL preference stored by this bot, not an independently exposed CoC API field.
+- Last login is absent from the public CoC API. /lastseen stores a captain's manual observation, always labeled MANUAL.
+- Defaults: 35% strength, 30% attendance, 25% attacks, 10% preference. Weights must sum to 100.
+- One account per verified Telegram owner in the main roster by default; extra accounts are visible as twinks.
+- Kicks, promotions and CWL bonus awards are captain review suggestions only; nothing is applied automatically.
+- /unlink and /lastseen require current verified leader/co-leader rights. Users can unlink only their own account.
