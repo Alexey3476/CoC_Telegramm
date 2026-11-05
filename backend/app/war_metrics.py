@@ -13,10 +13,19 @@ LEAGUE_ORDER = {
 
 
 def _league_index(name: str) -> float | None:
+    """Modern 2026 ranked leagues expose numbered tiers, e.g. Electro League 32.
+
+    Legacy Bronze/Crystal names are supported only as a fallback. Do not
+    assume Electro, Archer etc are unranked based on the pre-2026 list.
+    """
     lower = (name or "").lower()
+    match = re.search(r"\bleague\s+(\d{1,2})\b", lower)
+    if match:
+        number = int(match.group(1))
+        return float(number) if 1 <= number <= 50 else None
     for league, level in LEAGUE_ORDER.items():
         if league in lower:
-            tier = re.search(r"\b(i{1,3}|iv|v)\b", lower)
+            tier = re.search(r"\b(iii|ii|iv|i|v)\b", lower)
             bonus = {"iii": .0, "ii": .3, "i": .6}.get(tier.group(1), .3) if tier else .3
             return level + bonus
     return None
@@ -25,41 +34,56 @@ def _league_index(name: str) -> float | None:
 def _peer_percentile(value: float | None, cohort: list[float]) -> float | None:
     if value is None or len(cohort) < 2:
         return None
-    # Equal players share 50, not 100. Ranks refer to same-TH peers only.
     return round(100 * (sum(v < value for v in cohort) +
                         .5 * sum(v == value for v in cohort)) / len(cohort), 1)
 
 
 def relative_strength(players: list[dict[str, Any]]) -> dict[str, dict]:
-    """TH-matched player-level/equipment/league percentiles within this clan.
+    """Compare same-TH heroes, equipment, ranked league and experience.
 
-    The API provides no building levels. One-person TH cohorts have no defensible
-    relative ranking: keep 50 neutral and mark the source/coverage.
+    Exp level is only a modest proxy for long-term play, NEVER an inference
+    of defensive buildings. The absolute CWL proxy weights Town Hall level.
     """
     cohorts: dict[int, list[dict]] = defaultdict(list)
     for member in players:
         if member.get("tag"):
             cohorts[int(member.get("townHallLevel") or 0)].append(member)
+    highest = max(cohorts, default=0)
     out = {}
-    for members in cohorts.values():
-        heroes = [float(p["heroesLevel"]) for p in members if isinstance(p.get("heroesLevel"), (int, float))]
-        equipment = [float(p["heroEquipmentScore"]) for p in members if isinstance(p.get("heroEquipmentScore"), (int, float))]
-        leagues = [x for p in members if (x := _league_index(str(p.get("league") or ""))) is not None]
+    for th, members in cohorts.items():
+        def cohort_values(field: str) -> list[float]:
+            return [float(p[field]) for p in members
+                    if isinstance(p.get(field), (int, float))]
+        heroes = cohort_values("heroesLevel")
+        equipment = cohort_values("heroEquipmentScore")
+        experience = cohort_values("expLevel")
+        leagues = [_league_index(str(p.get("league") or "")) for p in members]
+        ranked = [x for x in leagues if x is not None]
         for player in members:
+            def peer(field: str, values: list[float]) -> float | None:
+                val = player.get(field)
+                return _peer_percentile(float(val), values) if isinstance(val, (int, float)) else None
             pairs = (
-                (70, _peer_percentile(float(player["heroesLevel"]), heroes)
-                 if isinstance(player.get("heroesLevel"), (int, float)) else None),
-                (20, _peer_percentile(float(player["heroEquipmentScore"]), equipment)
-                 if isinstance(player.get("heroEquipmentScore"), (int, float)) else None),
-                (10, _peer_percentile(_league_index(str(player.get("league") or "")), leagues)),
+                (45, peer("heroesLevel", heroes)),
+                (20, peer("heroEquipmentScore", equipment)),
+                (15, peer("expLevel", experience)),
+                (20, _peer_percentile(_league_index(str(player.get("league") or "")), ranked)),
             )
-            known = [(weight, val) for weight, val in pairs if val is not None]
-            score = round(sum(weight * value for weight, value in known) / sum(weight for weight, _ in known), 1) if known else 50.0
+            known = [(weight, value) for weight, value in pairs if value is not None]
+            relative = (round(sum(w * value for w, value in known) / sum(w for w, _ in known), 1)
+                        if known else 50.)
+            # CWL has no equal-TH matchmaking: a rushed TH18 can be weaker
+            # than a maxed TH17, but raw TH still matters considerably.
+            # Bounded 18 points per TH step; 20% same-TH relative adjustments.
+            hall_proxy = max(10., 100. - 18. * max(0, highest - th))
+            absolute = round(.80 * hall_proxy + .20 * relative, 1)
             out[str(player["tag"])] = {
-                "relativeStrength": score,
-                "strengthCoverage": sum(weight for weight, _ in known),
+                "relativeStrength": relative,
+                "absoluteStrength": absolute,
+                "strengthCoverage": sum(w for w, _ in known),
                 "townHallPeers": len(members),
-                "method": "TH-matched clan peers; 70% heroes, 20% equipment, 10% league",
+                "method": "same-TH cohort: heroes45/equipment20/exp15/league20; "
+                          "CWL proxy: hall80/relative20; building defenses unknown",
             }
     return out
 
