@@ -491,7 +491,10 @@ async def get_next_war_analysis(
         if not tag:
             continue
         town_hall = int(profile.get("townHallLevel") or member.get("townHallLevel") or 0)
-        heroes_level = sum(int(hero.get("level", 0)) for hero in profile.get("heroes", []))
+        # Builder Base heroes cannot attack in Home Village wars/CWL.
+        heroes_level = sum(int(hero.get("level", 0)) for hero in profile.get("heroes", [])
+                           if hero.get("village") != "builderBase"
+                           and hero.get("name") not in {"Battle Machine", "Battle Copter"})
         equipped = [e for e in profile.get("heroEquipment", []) if e.get("level")]
         equipment_level = sum(int(item.get("level", 0)) for item in equipped)
         preference = profile.get("warPreference", "unknown")
