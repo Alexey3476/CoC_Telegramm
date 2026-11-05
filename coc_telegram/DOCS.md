@@ -50,3 +50,6 @@ Daily public player-profile snapshots are saved in `/data/player_progress.db` wi
 - /unlink and /lastseen require current verified leader/co-leader rights. Users can unlink only their own account.
 
 Manual last seen (captains only): /lastseen #TAG 2d, /lastseen #TAG 48h or /lastseen #TAG YYYY-MM-DD HH:MM (Berlin time). /lastseen #TAG clear clears the observation. This records what you saw in the game, NOT what the official API reports. Please reconfirm CWL signup each new league season.
+
+## Backup before version 0.2.1
+Before updating the Supervisor add-on, create a complete HA backup that includes the add-on data folder. The multi-account SQLite schema migration is automatic and transactional; if a legacy tag conflict is found, the migration refuses to delete any data and the app will log an error until manually resolved.
