@@ -1,5 +1,11 @@
 # Clash of Clans Telegram Home Server
 
+## Recommended: separate Home Assistant App (v0.2.1)
+
+This repository installs as a standalone **CoC Telegram Bot** Home Assistant add-on, separate from any smart-home Telegram bot. See [add-on setup, configuration and role model](coc_telegram/DOCS.md). Install the **Beerlogger01** repository in Home Assistant; changes to staging PRs in Alexey3476 are not installed until merged into Beerlogger01/main and the GHCR image is published.
+
+CoC game-token verification is required for each linked account. A verified leader or co-leader on **any** linked CoC account can use the private `/staff` interface without Telegram administrator permissions. Regular KV and CWL opt-in are read from the official game's `warPreference`, not manually duplicated in Telegram. The public CoC API cannot expose player last-login or individual Clan Games points.
+
 A lightweight home-server stack that exposes a FastAPI backend for Clash of Clans data and a Telegram bot that consumes it. All Clash of Clans API traffic is centralized in the backend with bounded in-memory caching to protect rate limits.
 
 ## Architecture

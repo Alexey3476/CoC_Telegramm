@@ -106,6 +106,8 @@ def summarize_wars(wars: list[dict[str, Any]], clan_tag: str) -> dict[str, dict[
         possible, used = record["attacksPossible"], record["attacksUsed"]
         record["reliabilityPct"] = round(100 * used / possible, 1) if possible else None
         record["averageStars"] = round(record["stars"] / used, 2) if used else None
+        record["averageWeightedStars"] = round(record["skillWeightedStars"] / used, 2) if used else None
+        record["qualityPct"] = round(100 * record["skillWeightedStars"] / (3 * used), 1) if used else None
         record["warReadiness"] = round(
             65 * used / possible + 35 * record["skillWeightedStars"] / (3 * used), 1
         ) if used and possible else (0.0 if possible else None)

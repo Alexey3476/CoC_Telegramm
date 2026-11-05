@@ -12,6 +12,7 @@ from app.cache import get_cached_json, set_cached_json
 from app.settings import settings
 from app.war_history import WarHistory, summarize_wars
 from app.selection import SelectionStore, score_and_categorize
+from app.war_metrics import missed_war_streak, missed_current_cwl
 
 logger = logging.getLogger(__name__)
 
@@ -399,7 +400,31 @@ async def get_next_war_analysis(
     clan_data = await get_clan(client, redis)
     members = clan_data.get("memberList", [])
     clan_tag = normalize_tag(settings.coc_clan_tag)
-    history_stats = summarize_wars(history.completed(20), clan_tag) if history else {}
+    archived = history.completed(100) if history else []
+    # Old snapshots without explicit kind are accepted only for ordinary war
+    # when they expose the standard two-attack limit. Future snapshots have
+    # unambiguous _warKind from the collector.
+    regular_archive = [w for w in archived if w.get("_warKind") == "war"
+                       or (not w.get("_warKind") and w.get("attacksPerMember") == 2)]
+    cwl_archive = [w for w in archived if w.get("_warKind") == "cwl"]
+    history_stats = summarize_wars(regular_archive, clan_tag)
+    cwl_history = summarize_wars(cwl_archive, clan_tag)
+    missed_streaks = missed_war_streak(archived, clan_tag)
+    current_cwl_missed = set()
+    try:
+        active_group, active_wars = await get_league_wars(client, redis)
+        if active_group.get("state") in {"inWar", "preparation"}:
+            current_cwl_missed = missed_current_cwl(active_wars, clan_tag)
+    except (NotFoundError, ForbiddenError, RateLimitError, RuntimeError, TimeoutError):
+        pass
+    raids = {}
+    try:
+        latest_raids = await get_clan_raids(client, redis)
+        current_raid = latest_raids.get("currentRaid") or {}
+        raids = {m.get("tag"): int(m.get("capitalResourcesLooted") or 0)
+                 for m in current_raid.get("members") or [] if m.get("tag")}
+    except (NotFoundError, ForbiddenError, RateLimitError, RuntimeError, TimeoutError):
+        pass
     suggested_size = 15
     try:
         war_data = await get_war(client, redis)
@@ -436,6 +461,7 @@ async def get_next_war_analysis(
         equipment_level = sum(int(item.get("level", 0)) for item in equipped)
         preference = profile.get("warPreference", "unknown")
         previous = history_stats.get(tag)
+        cwl_previous = cwl_history.get(tag)
         # TH matters for matchmaking, but is not evidence of reliability.
         combat_score = round(
             min(60, town_hall * 3.3)
@@ -454,7 +480,13 @@ async def get_next_war_analysis(
             "warStars": profile.get("warStars"),
             "donations": member.get("donations", 0),
             "warPreference": preference,
-            "league": (profile.get("league") or member.get("league") or {}).get("name", "Unknown"),
+            "role": profile.get("role") or member.get("role") or "member",
+            "raidLoot": raids.get(tag),
+            "missedWarsInARow": missed_streaks.get(tag, 0),
+            "missedThisCWL": tag in current_cwl_missed,
+            "cwlHistory": cwl_previous or {},
+            "league": ((profile.get("leagueTier") or profile.get("league")
+                        or member.get("leagueTier") or member.get("league") or {}).get("name", "Unknown")),
             "heroesLevel": heroes_level if profile else None,
             "heroEquipmentScore": equipment_level if profile else None,
             "heroEquipmentCount": len(equipped) if profile else None,
@@ -467,21 +499,14 @@ async def get_next_war_analysis(
             "combatReadiness": combat_score,
             "warReadiness": readiness,
         })
-    # CWL bonuses use only observed finished CWL wars, never regular war attacks.
-    if history:
-        cwl_wars = [w for w in history.completed(25)
-                    if w.get("tag") or w.get("attacksPerMember") is None]
-        cwl_history = summarize_wars(cwl_wars, clan_tag)
-    else:
-        cwl_history = {}
     for member in ranking:
-        h = cwl_history.get(member["tag"]) or {}
-        member["cwlWars"] = h.get("wars", 0)
-        member["cwlAverageStars"] = h.get("averageStars")
-        member["cwlMissedAttacks"] = h.get("missedAttacks")
+        ch = member.get("cwlHistory") or {}
+        member["cwlWars"] = ch.get("wars", 0)
+        member["cwlAverageStars"] = ch.get("averageStars")
+        member["cwlMissedAttacks"] = ch.get("missedAttacks")
     if policy:
         selected = score_and_categorize(
-            ranking, policy.weights(), policy.get_preferences(clan_tag),
+            ranking, policy.weights(mode), policy.get_preferences(clan_tag),
             mode=mode, size=suggested_size,
         )
     else:
@@ -496,10 +521,10 @@ async def get_next_war_analysis(
         "currentWarState": current_state,
         "topTen": selected["recommendedLineup"][:10],
         "historyKnown": bool(history_stats),
-        "observedWarCount": len(history.completed(20)) if history else 0,
+        "observedWarCount": len(archived),
         "analysisFactors": {
             "lastWarPerformance": "Только сохранённые завершённые войны: пропуски, звёзды и уровень цели. Неизвестное не считается нулём.",
-            "combatReadiness": "Ратуша, уровни героев и снаряжения (если профиль доступен).",
+            "combatReadiness": "Сравнение уровней героев, снаряжения и лиги только среди участников с той же ратушей; без сверстников оценка нейтральная.",
             "warReadiness": "Сравнивай вклад компонентов в таблице весов. Пропуски и уровень цели учитываются только при наличии истории.",
             "sortedBy": "Категория доступности, затем взвешенный балл по имеющимся сигналам",
         },

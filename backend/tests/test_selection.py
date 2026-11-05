@@ -28,14 +28,16 @@ def test_weights_remain_100_and_reject_invalid(tmp_path):
         db.set_weight("combat",101)
 
 
-def test_war_pref_from_game_and_independent_cwl_opt(tmp_path):
+def test_war_preference_in_game_applies_to_war_and_cwl(tmp_path):
     db=SelectionStore(str(tmp_path/"policy.db"))
     db.set_cwl("#CLAN","#AAA","out")
     prefs=db.get_preferences("#CLAN")
     war=score_and_categorize([player()],DEFAULT_WEIGHTS,prefs,mode="war",now=NOW)
     cwl=score_and_categorize([player()],DEFAULT_WEIGHTS,prefs,mode="cwl",now=NOW)
     assert len(war["categories"]["main"])==1
-    assert len(cwl["categories"]["optout"])==1
+    assert len(cwl["categories"]["main"])==1
+    out=score_and_categorize([dict(player(),warPreference="out")],DEFAULT_WEIGHTS,prefs,mode="cwl",now=NOW)
+    assert len(out["categories"]["optout"])==1
 
 
 def test_manual_last_seen_over_two_days_excluded_not_api_guess(tmp_path):
@@ -65,9 +67,11 @@ def test_kick_requires_multiple_signals_and_stays_advisory(tmp_path):
 
 
 def test_promotion_and_bonus_need_evidence():
-    good=player(history={"wars":7,"attacksUsed":14,"attacksPossible":14,
-             "missedAttacks":0,"averageStars":2.7,"threeStarsEqualOrHigher":6},
-             cwlWars=5,cwlAverageStars=2.8,cwlMissedAttacks=0)
+    good=player(role="member", donations=100, raidLoot=300,
+        history={"wars":7,"attacksUsed":14,"attacksPossible":14,
+                 "reliabilityPct":100,"missedAttacks":0,"qualityPct":95,
+                 "averageWeightedStars":2.85,"threeStarsEqualOrHigher":6},
+        cwlHistory={"wars":5,"missedAttacks":0,"qualityPct":95,"averageStars":2.8})
     data=score_and_categorize([good],DEFAULT_WEIGHTS,{},now=NOW)
     assert len(data["categories"]["promotion"])==1
     assert len(data["categories"]["bonus"])==1
@@ -80,5 +84,5 @@ def test_prefs_and_manual_activity_persist(tmp_path):
     db.set_cwl("#CLAN","#AAA","in")
     db.report_last_seen("#CLAN","#AAA",(NOW-timedelta(days=1)).isoformat(),7)
     other=SelectionStore(path)
-    assert other.get_preferences("#CLAN")["#AAA"]["cwlPreference"]=="in"
+    assert "cwlPreference" not in other.get_preferences("#CLAN")["#AAA"]
     assert other.get_preferences("#CLAN")["#AAA"]["lastSeenReporter"]==7

@@ -32,6 +32,7 @@ from app.coc_client import (
 )
 from app.settings import settings, validate_settings
 from app.war_history import WarHistory, completed_for_clan
+from app.hall import hall_of_fame
 from app.progress import ProgressStore
 from app.selection import SelectionStore
 
@@ -42,21 +43,26 @@ logger = logging.getLogger(__name__)
 async def collect_war_history(
     client: httpx.AsyncClient, cache: TTLCache, history: WarHistory
 ) -> None:
-    """Periodically save regular and CWL wars, including completed CWL rounds."""
+    """CWL collection must continue even if the ordinary-war endpoint fails."""
     while True:
         try:
             regular = await get_regular_war(client, cache)
-            if history.save(regular):
+            if history.save({**regular, "_warKind": "war"}):
                 logger.info("Saved regular clan war snapshot")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Regular war unavailable; still collecting CWL")
+        try:
             _, cwl_wars = await get_league_wars(client, cache)
             for war in cwl_wars:
-                history.save(war)
+                history.save({**war, "_warKind": "cwl"})
             if cwl_wars:
                 logger.info("Reviewed %s CWL wars", len(cwl_wars))
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("War snapshot collection failed; will retry")
+            logger.warning("CWL collection unavailable; will retry")
         await asyncio.sleep(300)
 
 
@@ -252,10 +258,11 @@ async def cwl(request: Request):
 
 
 @app.get("/progress/{tag}")
-async def progress(tag: str, request: Request):
+async def progress(tag: str, request: Request, days: int = 7):
     try:
         profile = await get_player(get_http_client(request), get_redis(request), tag)
-        return request.app.state.progress.record(profile)
+        request.app.state.progress.record(profile)
+        return {**request.app.state.progress.timeline(profile["tag"], days=days), "name": profile.get("name")}
     except InvalidTagError as exc:
         raise HTTPException(status_code=400, detail="Invalid player tag") from exc
     except NotFoundError as exc:
@@ -268,6 +275,20 @@ async def progress(tag: str, request: Request):
         raise HTTPException(status_code=429, detail="Clash API rate limited") from exc
     except (RuntimeError, TimeoutError) as exc:
         raise HTTPException(status_code=502, detail="Clash API unavailable") from exc
+
+
+@app.get("/hall")
+async def hall(request: Request):
+    """Leaderboard by separate observable sources. No fictional games points."""
+    client = get_http_client(request)
+    cache = get_redis(request)
+    clan = await get_clan(client, cache)
+    try:
+        raids = await get_clan_raids(client, cache)
+    except (NotFoundError, ForbiddenError, RateLimitError, RuntimeError, TimeoutError):
+        raids = {}
+    return hall_of_fame(clan, request.app.state.history.completed(100),
+                        raids.get("currentRaid"))
 
 
 @app.get("/health")
@@ -374,6 +395,7 @@ class PreferenceUpdate(BaseModel):
 class WeightUpdate(BaseModel):
     metric: str
     value: float
+    mode: str = "war"
 
 
 class ManualLastSeenUpdate(BaseModel):
@@ -382,14 +404,17 @@ class ManualLastSeenUpdate(BaseModel):
 
 
 @app.get("/selection/weights")
-async def selection_weights(request: Request):
-    return {"weights": request.app.state.selection.weights()}
+async def selection_weights(request: Request, mode: str = "war"):
+    try:
+        return {"mode": mode, "weights": request.app.state.selection.weights(mode)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/selection/weights")
 async def selection_weight_update(body: WeightUpdate, request: Request):
     try:
-        return {"weights": request.app.state.selection.set_weight(body.metric, body.value)}
+        return {"mode": body.mode, "weights": request.app.state.selection.set_weight(body.metric, body.value, mode=body.mode)}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

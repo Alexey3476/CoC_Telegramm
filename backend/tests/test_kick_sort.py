@@ -15,5 +15,7 @@ def test_kick_review_sorted_lowest_war_score_first():
             "warPreference":"in","history":history}
     result=score_and_categorize([first,second],DEFAULT_WEIGHTS,
                                 {"#A":pref(),"#B":pref()},now=now)
-    assert [p["name"] for p in result["categories"]["kick"]] == ["Low","High"]
+    assert len(result["categories"]["kick"]) == 2
+    # Different TH alone must not influence the review ordering.
+    assert result["categories"]["kick"][0]["selectionScore"] == result["categories"]["kick"][1]["selectionScore"]
     assert result["categories"]["main"] == []
