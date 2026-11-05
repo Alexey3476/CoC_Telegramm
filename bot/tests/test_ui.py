@@ -50,7 +50,7 @@ def test_lineup_explains_missing_data_and_has_backup():
     assert "без истории" in lineup_message(data)
     assert "Lex" in lineup_message(data)
     assert "Other" in lineup_message(data, "bench")
-    assert "55%" in lineup_message(data, "about")
+    assert "80% сила самой TH" in lineup_message(data, "about")
 
 
 
