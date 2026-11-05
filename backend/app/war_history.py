@@ -110,3 +110,18 @@ def summarize_wars(wars: list[dict[str, Any]], clan_tag: str) -> dict[str, dict[
             65 * used / possible + 35 * record["skillWeightedStars"] / (3 * used), 1
         ) if used and possible else (0.0 if possible else None)
     return dict(results)
+
+
+
+def completed_for_clan(wars: list[dict[str, Any]], clan_tag: str) -> list[dict[str, Any]]:
+    """Only completed wars involving our clan, always our side in 'clan'."""
+    valid = []
+    for war in wars:
+        if war.get("state") != "warEnded":
+            continue
+        home, away = war.get("clan") or {}, war.get("opponent") or {}
+        if home.get("tag") == clan_tag:
+            valid.append(war)
+        elif away.get("tag") == clan_tag:
+            valid.append({**war, "clan": away, "opponent": home})
+    return valid

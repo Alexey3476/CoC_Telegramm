@@ -1,5 +1,5 @@
 name: Clash of Clans Telegram Bot
-version: "0.2.0"
+version: "0.2.1"
 slug: coc_telegram
 description: Independent Clash of Clans Telegram bot with war analytics
 url: https://github.com/Beerlogger01/CoC_Telegramm
@@ -19,6 +19,7 @@ options:
   invite_ttl_minutes: 10
   enforce_clan_membership: true
   require_player_verification: true
+  war_results_enabled: true
   war_reminder_enabled: true
   war_reminder_window_hours: 4
   war_reminder_interval_minutes: 15
@@ -33,6 +34,7 @@ schema:
   invite_ttl_minutes: int(1,1440)
   enforce_clan_membership: bool
   require_player_verification: bool
+  war_results_enabled: bool
   war_reminder_enabled: bool
   war_reminder_window_hours: int(1,24)
   war_reminder_interval_minutes: int(1,120)

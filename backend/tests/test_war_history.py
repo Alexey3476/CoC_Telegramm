@@ -41,3 +41,18 @@ def test_records_only_completed_wars(tmp_path: Path):
 
 def test_unknown_stays_unknown():
     assert summarize_wars([], "#AAA") == {}
+
+
+
+def test_finished_wars_for_clan_excludes_others_and_orients_cwl():
+    from app.war_history import completed_for_clan
+    own = {"tag": "#OURS", "stars": 30, "destructionPercentage": 90}
+    foe = {"tag": "#THEM", "stars": 29, "destructionPercentage": 89}
+    ended = {"state": "warEnded", "startTime": "20261105T120000Z",
+             "clan": foe, "opponent": own}
+    pending = {"state": "inWar", "clan": own, "opponent": foe}
+    unrelated = {"state": "warEnded", "clan": {"tag": "#A"}, "opponent": {"tag": "#B"}}
+    results = completed_for_clan([ended, pending, unrelated], "#OURS")
+    assert len(results) == 1
+    assert results[0]["clan"]["tag"] == "#OURS"
+    assert results[0]["opponent"]["tag"] == "#THEM"
