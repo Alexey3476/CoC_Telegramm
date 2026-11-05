@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     request_timeout_seconds: int = 30
     debug: bool = False
     bindings_db_path: str = "/data/bindings.db"
+    polls_db_path: str = "/data/polls.db"
     clan_group_id: int | None = None
     invite_ttl_minutes: int = 10
     enforce_clan_membership: bool = False
