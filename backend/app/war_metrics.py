@@ -31,10 +31,10 @@ def _peer_percentile(value: float | None, cohort: list[float]) -> float | None:
 
 
 def relative_strength(players: list[dict[str, Any]]) -> dict[str, dict]:
-    """TH-matched player-level/equipment/league percentiles within this clan.
+    """Within-TH percentiles using known hero, equipment, experience and league data.
 
-    The API provides no building levels. One-person TH cohorts have no defensible
-    relative ranking: keep 50 neutral and mark the source/coverage.
+    Experience level is a weak longevity proxy, NOT a building/defence snapshot.
+    A single-member TH cohort is neutral rather than spuriously maxed.
     """
     cohorts: dict[int, list[dict]] = defaultdict(list)
     for member in players:
@@ -45,12 +45,16 @@ def relative_strength(players: list[dict[str, Any]]) -> dict[str, dict]:
         heroes = [float(p["heroesLevel"]) for p in members if isinstance(p.get("heroesLevel"), (int, float))]
         equipment = [float(p["heroEquipmentScore"]) for p in members if isinstance(p.get("heroEquipmentScore"), (int, float))]
         leagues = [x for p in members if (x := _league_index(str(p.get("league") or ""))) is not None]
+        experience = [float(p["expLevel"]) for p in members
+                      if isinstance(p.get("expLevel"), (int, float))]
         for player in members:
             pairs = (
-                (70, _peer_percentile(float(player["heroesLevel"]), heroes)
+                (60, _peer_percentile(float(player["heroesLevel"]), heroes)
                  if isinstance(player.get("heroesLevel"), (int, float)) else None),
                 (20, _peer_percentile(float(player["heroEquipmentScore"]), equipment)
                  if isinstance(player.get("heroEquipmentScore"), (int, float)) else None),
+                (10, _peer_percentile(float(player["expLevel"]), experience)
+                 if isinstance(player.get("expLevel"), (int, float)) else None),
                 (10, _peer_percentile(_league_index(str(player.get("league") or "")), leagues)),
             )
             known = [(weight, val) for weight, val in pairs if val is not None]
@@ -59,7 +63,7 @@ def relative_strength(players: list[dict[str, Any]]) -> dict[str, dict]:
                 "relativeStrength": score,
                 "strengthCoverage": sum(weight for weight, _ in known),
                 "townHallPeers": len(members),
-                "method": "TH-matched clan peers; 70% heroes, 20% equipment, 10% league",
+                "method": "TH peers: 60% heroes, 20% equipment, 10% experience, 10% league; defence unavailable",
             }
     return out
 
