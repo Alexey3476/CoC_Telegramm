@@ -347,6 +347,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         logger.debug("Start command from user %s", update.effective_user.id)
         if ensure_private_chat(update):
+            storage: BindingsStorage = context.application.bot_data["storage"]
+            linked = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
+            if linked:
+                await menu(update, context)
+                return
             # Private chat - show bind option
             user_name = update.effective_user.first_name or "Player"
             await update.message.reply_text(
@@ -421,126 +426,50 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def clan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Clan summary with consistent back-to-dashboard navigation."""
     if not update.message and not update.callback_query:
         return
-    
-    async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
-        try:
+    try:
+        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
             payload = await fetch_json(client, "/clan")
-            message = format_clan(payload)
-            if update.callback_query:
-                await update.callback_query.edit_message_text(message, parse_mode=ParseMode.MARKDOWN)
-            else:
-                await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
-        except httpx.HTTPStatusError as exc:
-            status = exc.response.status_code
-            logger.warning("Backend error: %s", exc)
-            if status == 429:
-                message = "Rate limit reached. Please try again later."
-            elif status == 400:
-                message = "Invalid clan tag configured."
-            elif status == 401:
-                message = "Backend token invalid. Please update the backend token."
-            elif status == 403:
-                message = "Backend IP is not whitelisted for Clash of Clans."
-            elif status == 504:
-                message = "Backend timed out contacting Clash of Clans."
-            else:
-                message = "Backend error while fetching clan data."
-            if update.callback_query:
-                await update.callback_query.edit_message_text(message)
-            else:
-                await update.message.reply_text(message)
-        except httpx.RequestError as exc:
-            logger.warning("Backend unreachable: %s", exc)
-            message = "Backend is unreachable. Please try again later."
-            if update.callback_query:
-                await update.callback_query.edit_message_text(message)
-            else:
-                await update.message.reply_text(message)
-        except Exception:  # noqa: BLE001
-            logger.exception("Unhandled error in /clan")
-            message = "Unexpected error occurred. Please try again."
-            if update.callback_query:
-                await update.callback_query.edit_message_text(message)
-            else:
-                await update.message.reply_text(message)
+        await send_or_edit_message(update, format_clan(payload), parse_mode=ParseMode.MARKDOWN)
+    except httpx.HTTPStatusError as exc:
+        logger.warning("Clan API request failed status=%s", exc.response.status_code)
+        await send_or_edit_message(update, binding_error_message(exc.response.status_code))
+    except httpx.RequestError:
+        logger.warning("Clan API unavailable")
+        await send_or_edit_message(update, "Сервис данных клана временно недоступен.")
 
 
 async def player(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show an explicitly supplied tag or the account linked to this Telegram user."""
     if not update.message and not update.callback_query:
         return
-    
+    if not update.effective_user:
+        return
     storage: BindingsStorage = context.application.bot_data["storage"]
-    
-    # Determine the tag to fetch
-    tag = None
     if context.args and context.args[0].lower() not in ("я", "me"):
-        # User provided a tag as argument
         try:
             tag = normalize_tag(context.args[0])
         except InvalidTagError:
-            message = "Неверный формат тега игрока."
-            if update.callback_query:
-                await update.callback_query.edit_message_text(message)
-            else:
-                await update.message.reply_text(message)
+            await send_or_edit_message(update, "Неверный формат тега.")
             return
     else:
-        # User didn't provide tag or said "я" - use their binding
-        binding = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
-        if not binding:
-            message = "Пожалуйста напишите ник игрока или напишите 'я'"
-            if update.callback_query:
-                await update.callback_query.edit_message_text(message)
-            else:
-                await update.message.reply_text(message)
+        bound = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
+        if not bound:
+            await send_or_edit_message(update, "Сначала привяжи игровой аккаунт через /bind.")
             return
-        tag = binding.coc_player_tag
-    
-    async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
-        try:
+        tag = bound.coc_player_tag
+    try:
+        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
             payload = await fetch_json(client, f"/player/{encode_tag(tag)}")
-            message = format_player(payload)
-            if update.callback_query:
-                await update.callback_query.edit_message_text(message, parse_mode=ParseMode.MARKDOWN)
-            else:
-                await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
-        except httpx.HTTPStatusError as exc:
-            status = exc.response.status_code
-            logger.warning("Backend error: %s", exc)
-            if status == 400:
-                message = "Неверный формат тега игрока."
-            elif status == 404:
-                message = "Игрок не найден."
-            elif status == 401:
-                message = "Токен бэкенда недействителен."
-            elif status == 403:
-                message = "IP бэкенда не в списке разрешенных для Clash of Clans."
-            elif status == 429:
-                message = "Лимит запросов. Попробуйте позже."
-            elif status == 504:
-                message = "Бэкенд не смог соединиться с Clash of Clans."
-            else:
-                message = "Ошибка при получении данных игрока."
-            if update.callback_query:
-                await update.callback_query.edit_message_text(message)
-            else:
-                await update.message.reply_text(message)
-        except httpx.RequestError as exc:
-            logger.warning("Backend unreachable: %s", exc)
-            message = "Бэкенд недоступен. Попробуйте позже."
-            if update.callback_query:
-                await update.callback_query.edit_message_text(message)
-            else:
-                await update.message.reply_text(message)
-        except Exception:  # noqa: BLE001
-            logger.exception("Unhandled error in /player")
-            message = "Неожиданная ошибка. Попробуйте позже."
-            if update.callback_query:
-                await update.callback_query.edit_message_text(message)
-            else:
-                await update.message.reply_text(message)
+        await send_or_edit_message(update, format_player(payload), parse_mode=ParseMode.MARKDOWN)
+    except httpx.HTTPStatusError as exc:
+        logger.warning("Player API request failed status=%s", exc.response.status_code)
+        await send_or_edit_message(update, binding_error_message(exc.response.status_code))
+    except httpx.RequestError:
+        logger.warning("Player API unavailable")
+        await send_or_edit_message(update, "Сервис данных игрока временно недоступен.")
 
 
 async def war(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1061,79 +990,11 @@ async def grouplink(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show user's full CoC profile from binding."""
-    if not update.message or not update.effective_user:
-        return
+    """Open the verified linked account without duplicating formatters."""
     if not ensure_private_chat(update):
         return
-    
-    try:
-        # Check if user is bound
-        storage: BindingsStorage = context.application.bot_data["storage"]
-        binding = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
-        
-        if not binding:
-            await update.message.reply_text(
-                "❌ Вы не привязаны к боту. Используйте /bind чтобы привязаться."
-            )
-            return
-        
-        # Fetch player info from API
-        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
-            try:
-                path = f"/player/{quote(binding.coc_player_tag)}"
-                response = await client.get(build_url(path))
-                response.raise_for_status()
-                player_data = response.json()
-            except httpx.HTTPStatusError:
-                await update.message.reply_text(
-                    "❌ Ошибка при получении профиля. Попробуйте позже."
-                )
-                return
-        
-        # Format player profile
-        name = player_data.get("name", "Unknown")
-        tag = html.escape(player_data.get("tag", "N/A"))
-        th_level = player_data.get("townHallLevel", "?")
-        exp_level = player_data.get("expLevel", "?")
-        trophies = player_data.get("trophies", 0)
-        best_trophies = player_data.get("bestTrophies", 0)
-        troops = player_data.get("troops", [])
-        spells = player_data.get("spells", [])
-        
-        profile_text = (
-            f"👤 *Твой Профиль*\n\n"
-            f"🎮 *Имя:* {html.escape(name)}\n"
-            f"🏷️ *Тег:* {tag}\n"
-            f"🏛️ *Town Hall:* {th_level}\n"
-            f"⭐ *Уровень опыта:* {exp_level}\n"
-            f"🏆 *Трофеи:* {trophies} (макс: {best_trophies})\n"
-        )
-        
-        if troops:
-            profile_text += f"\n🪖 *Войска:* {len(troops)} видов\n"
-        if spells:
-            profile_text += f"✨ *Заклинания:* {len(spells)} видов\n"
-        
-        # Get clan info
-        clan = player_data.get("clan", {})
-        if clan:
-            clan_name = clan.get("name", "Unknown")
-            clan_tag = clan.get("tag", "N/A")
-            profile_text += f"\n🏰 *Клан:* {html.escape(clan_name)}\n"
-            profile_text += f"🏷️ *Тег клана:* {html.escape(clan_tag)}\n"
-        
-        await update.message.reply_text(
-            profile_text,
-            parse_mode=ParseMode.MARKDOWN,
-            disable_web_page_preview=True,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Failed to show profile: %s", exc)
-        await update.message.reply_text(
-            "❌ Ошибка при отображении профиля. Попробуйте позже."
-        )
-
+    context.args = []
+    await player(update, context)
 
 
 async def settings_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1142,7 +1003,8 @@ async def settings_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not ensure_private_chat(update):
         await update.message.reply_text("Please use /settings in a private chat with the bot.")
         return
-    await update.message.reply_text(format_settings_report())
+    await update.message.reply_text("⚙️ Настройки: привязка через /bind, изменение через /unbind.\n"
+                                   "Параметры сервера хранятся в Home Assistant и не показываются участникам.")
 
 
 async def verify_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

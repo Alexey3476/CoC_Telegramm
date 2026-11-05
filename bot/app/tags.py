@@ -40,7 +40,7 @@ async def assign_game_tag(context, group_id: int, user_id: int, name: str) -> bo
 async def sync_tags_daily(context) -> None:
     """Refresh bound game nicknames once per day and preserve admin custom titles."""
     from app.backend_client import fetch_json
-    from app.bot import encode_tag
+    from urllib.parse import quote
     from app.settings import settings
     storage = context.application.bot_data["storage"]
     group_id = settings.clan_group_id
@@ -52,7 +52,7 @@ async def sync_tags_daily(context) -> None:
         async with semaphore:
             try:
                 async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
-                    player = await fetch_json(client, f"/player/{encode_tag(binding.coc_player_tag)}")
+                    player = await fetch_json(client, f"/player/{quote(binding.coc_player_tag, safe='')}")
                 if settings.enforce_clan_membership:
                     if (player.get("clan") or {}).get("tag") != settings.coc_clan_tag:
                         return
