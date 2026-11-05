@@ -261,7 +261,7 @@ def main_menu_keyboard(user_id: int | None = None, captain: bool = False) -> Inl
         [InlineKeyboardButton("🏛️ Столица", callback_data="menu_raids"),
          InlineKeyboardButton("🏰 Клан", callback_data="menu_clan")],
         [InlineKeyboardButton("👤 Профиль", callback_data="menu_profile"),
-         InlineKeyboardButton("🔐 Привязка", callback_data="bind_start")],
+         InlineKeyboardButton("👥 Аккаунты", callback_data="menu_accounts")],
         [InlineKeyboardButton("📈 Развитие", callback_data="menu_progress"),
          InlineKeyboardButton("❓ Справка", callback_data="menu_help")],
     ]
@@ -287,7 +287,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/topplayers — рейтинг активности\n"
         "/raids — рейды столицы\n"
         "/profile — мой игровой профиль\n"
-        "/bind — привязать игровой аккаунт\n"
+        "/bind — привязать дополнительный аккаунт\n"
+        "/accounts — мои аккаунты и твинки\n"
+        "/primary #ТЕГ — выбрать основной\n"
+        "/unlink #ТЕГ — удалить одну привязку\n"
+        "/cwlopt in/out — согласие на ЛВК\n"
+        "/weights — таблица весов\n"
+        "/lastseen, /setweight, /adminunlink — для руководства\n"
         "/grouplink — получить приглашение\n"
         "/unbind — отвязать аккаунт\n"
         "/chatid — ID группы (для администратора)\n\n"
@@ -309,7 +315,10 @@ async def sync_bot_commands(bot) -> None:
             BotCommand("help", "❓ Помощь")]
     await bot.set_my_commands(base)
     await bot.set_my_commands(
-        base + [BotCommand("bind", "🔐 Привязать игрока"),
+        base + [BotCommand("bind", "🔐 Добавить аккаунт"),
+                BotCommand("accounts", "👥 Мои аккаунты"),
+                BotCommand("cwlopt", "✅ Согласие на ЛВК"),
+                BotCommand("weights", "📊 Веса отбора"),
                 BotCommand("grouplink", "🔗 Ссылка в группу")],
         scope=BotCommandScopeAllPrivateChats(),
     )
@@ -390,13 +399,14 @@ async def has_captain_access(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not ensure_private_chat(update) or not update.effective_user:
         return False
     storage: BindingsStorage = context.application.bot_data["storage"]
-    binding = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
-    if not binding:
+    bindings = storage.get_user_accounts(settings.clan_group_id or 0, update.effective_user.id)
+    if not bindings:
         return False
     try:
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
             clan_data = await fetch_json(client, "/clan")
-        return is_captain(clan_data.get("memberList") or [], binding.coc_player_tag)
+        members = clan_data.get("memberList") or []
+        return any(is_captain(members, account.coc_player_tag) for account in bindings)
     except (httpx.RequestError, httpx.HTTPStatusError):
         return False
 
@@ -783,28 +793,19 @@ async def process_binding(
 
 
 async def unbind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message or not update.effective_user:
+    if not update.message or not update.effective_user or not ensure_private_chat(update):
         return
-    try:
-        if not ensure_private_chat(update):
-            await update.message.reply_text("Please use /unbind in a private chat with the bot.")
-            return
-        storage: BindingsStorage = context.application.bot_data["storage"]
-        removed = storage.delete_binding(settings.clan_group_id or 0, update.effective_user.id)
-    except Exception:  # noqa: BLE001
-        logger.exception("Failed to handle /unbind")
-        await update.message.reply_text("Unexpected error occurred. Please try again.")
+    if not context.args or context.args[0].lower() != "confirm":
+        await update.message.reply_text(
+            "⚠️ Эта команда удалит ВСЕ твои игровые привязки, включая твинков.\n"
+            "Для удаления одного аккаунта используй /unlink #ТЕГ.\n"
+            "Для подтверждения всех: /unbind confirm"
+        )
         return
-    if removed:
-        mention = format_mention(update.effective_user.id, update.effective_user.full_name)
-        message = f"Removed binding for {mention}."
-    else:
-        message = "No binding found for your account."
-    await update.message.reply_text(
-        message,
-        parse_mode=ParseMode.HTML,
-        disable_web_page_preview=True,
-    )
+    storage: BindingsStorage = context.application.bot_data["storage"]
+    removed = storage.delete_binding(settings.clan_group_id or 0, update.effective_user.id)
+    await update.message.reply_text("Все привязанные аккаунты удалены." if removed
+                                    else "У тебя нет привязанных аккаунтов.")
 
 
 async def mytag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -829,6 +830,225 @@ async def mytag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Unexpected error occurred. Please try again.")
 
 
+async def accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show all verified game accounts owned by one Telegram user."""
+    if not update.effective_user or not ensure_private_chat(update):
+        return
+    storage: BindingsStorage = context.application.bot_data["storage"]
+    bound = storage.get_user_accounts(settings.clan_group_id or 0, update.effective_user.id)
+    if not bound:
+        await send_or_edit_message(update, "Нет привязанных аккаунтов. Добавь первый через /bind.")
+        return
+    primary = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
+    rows = ["👥 <b>Мои игровые аккаунты</b>", ""]
+    for account in bound:
+        rows.append(f"• <code>{html.escape(account.coc_player_tag)}</code>" +
+                    (" ⭐ основной" if primary and primary.coc_player_tag == account.coc_player_tag else " · твинк"))
+    rows += ["", "Добавить: /bind", "Сделать основным: /primary #ТЕГ",
+             "Удалить один: /unlink #ТЕГ",
+             "Удалить все: /unbind confirm"]
+    await send_or_edit_message(update, "\n".join(rows), parse_mode=ParseMode.HTML,
+                               reply_markup=back_keyboard())
+
+
+async def primary_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.effective_user or not ensure_private_chat(update):
+        return
+    if len(context.args) != 1:
+        await update.message.reply_text("Используй /primary #ТЕГ")
+        return
+    try:
+        tag = normalize_tag(context.args[0])
+    except InvalidTagError:
+        await update.message.reply_text("Неверный тег игрока.")
+        return
+    storage: BindingsStorage = context.application.bot_data["storage"]
+    if not storage.set_primary_account(settings.clan_group_id or 0, update.effective_user.id, tag):
+        await update.message.reply_text("Этот аккаунт тебе не принадлежит или не привязан.")
+        return
+    await update.message.reply_text(f"⭐ {tag} выбран основным. Остальные твинковые привязки сохранены.")
+
+
+async def unlink(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.effective_user or not ensure_private_chat(update):
+        return
+    if len(context.args) != 1:
+        await update.message.reply_text("Используй /unlink #ТЕГ. Удаляется только одна привязка.")
+        return
+    try:
+        tag = normalize_tag(context.args[0])
+    except InvalidTagError:
+        await update.message.reply_text("Неверный тег.")
+        return
+    storage: BindingsStorage = context.application.bot_data["storage"]
+    success = storage.unlink_account(settings.clan_group_id or 0, tag,
+                                     owner_id=update.effective_user.id)
+    await update.message.reply_text(
+        f"Привязка {tag} удалена из базы. Остальные аккаунты сохранены." if success
+        else "Привязка не найдена или принадлежит другому пользователю."
+    )
+
+
+async def admin_unlink(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """A verified leader or co-leader can release one account without kicking anyone."""
+    if not update.message or not update.effective_user or not ensure_private_chat(update):
+        return
+    if not await has_captain_access(update, context):
+        await update.message.reply_text("Только лидер или соруководитель клана.")
+        return
+    if len(context.args) != 1:
+        await update.message.reply_text("Используй /adminunlink #ТЕГ")
+        return
+    try:
+        tag = normalize_tag(context.args[0])
+    except InvalidTagError:
+        await update.message.reply_text("Неверный тег.")
+        return
+    storage: BindingsStorage = context.application.bot_data["storage"]
+    success = storage.unlink_account(settings.clan_group_id or 0, tag)
+    logger.info("Admin unlink actor=%s tag=%s success=%s", update.effective_user.id, tag, success)
+    await update.message.reply_text(
+        f"Привязка {tag} удалена. Игрок НЕ исключён из клана или группы." if success
+        else "Привязка с таким тегом отсутствует."
+    )
+
+
+async def cwl_opt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Independent CWL participation switch for the owner's verified account."""
+    if not update.message or not update.effective_user or not ensure_private_chat(update):
+        return
+    storage: BindingsStorage = context.application.bot_data["storage"]
+    bound = storage.get_user_accounts(settings.clan_group_id or 0, update.effective_user.id)
+    if not bound:
+        await update.message.reply_text("Сначала /bind.")
+        return
+    if not context.args or context.args[0].lower() not in {"in", "out", "unknown"}:
+        await update.message.reply_text(
+            "Согласие на ЛВК отдельно от КВ в самой игре.\n"
+            "/cwlopt in [#ТЕГ] — согласен\n"
+            "/cwlopt out [#ТЕГ] — не участвую\n"
+            "/cwlopt unknown [#ТЕГ] — ещё не решил"
+        )
+        return
+    pref = context.args[0].lower()
+    try:
+        tag = normalize_tag(context.args[1]) if len(context.args) > 1 else bound[0].coc_player_tag
+    except InvalidTagError:
+        await update.message.reply_text("Неверный игровой тег.")
+        return
+    if tag not in {account.coc_player_tag for account in bound}:
+        await update.message.reply_text("Можно изменять статус CWL только своих проверенных аккаунтов.")
+        return
+    try:
+        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+            response = await client.post(build_url(f"/selection/cwl/{encode_tag(tag)}"),
+                                         json={"preference": pref})
+            response.raise_for_status()
+    except (httpx.RequestError, httpx.HTTPStatusError):
+        logger.warning("Could not save CWL preference user_id=%s", update.effective_user.id)
+        await update.message.reply_text("Сохранение статуса CWL недоступно.")
+        return
+    await update.message.reply_text(
+        f"Для {tag}: согласие на ЛВК = {pref}. Флажок участия в КВ внутри игры не изменён."
+    )
+
+
+async def weights(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+            data = await fetch_json(client, "/selection/weights")
+        values = data.get("weights") or {}
+    except (httpx.HTTPStatusError, httpx.RequestError):
+        await send_or_edit_message(update, "Не удалось загрузить таблицу весов.")
+        return
+    labels = [("combat", "🏰 Сила TH, героев, экипировки"),
+              ("reliability", "🎯 Использование атак"),
+              ("performance", "⭐ Результаты против целей"),
+              ("participation", "✅ Согласие на войну"),
+              ("activity", "🕒 Последний вход (ручная отметка)")]
+    lines = ["📊 <b>Веса следующей войны</b>", ""]
+    for key, label in labels:
+        lines.append(f"{label}: <b>{float(values.get(key, 0)):g}%</b>")
+    lines += ["", "Сумма: 100%. Недоступные показатели не приравниваются к нулю.",
+              "Команда руководства: /setweight combat 35",
+              "Вес участия в КВ основан на CoC API, в CWL — на согласии через Telegram."]
+    await send_or_edit_message(update, "\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+async def set_weight(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.effective_user or not ensure_private_chat(update):
+        return
+    if not await has_captain_access(update, context):
+        await update.message.reply_text("Настраивать веса может только лидер или соруководитель.")
+        return
+    if len(context.args) != 2:
+        await update.message.reply_text("Пример: /setweight combat 35\n"
+                                        "Поля: combat reliability performance participation activity")
+        return
+    try:
+        value = float(context.args[1])
+        if not 0 <= value <= 100:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text("Вес должен быть числом от 0 до 100%.")
+        return
+    try:
+        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+            resp = await client.post(build_url("/selection/weights"),
+                                     json={"metric": context.args[0].lower(), "value": value})
+            resp.raise_for_status()
+    except (httpx.HTTPStatusError, httpx.RequestError):
+        await update.message.reply_text("Не удалось обновить вес; проверь название метрики.")
+        return
+    await update.message.reply_text("Вес изменён, остальные пропорционально пересчитаны до 100%.")
+    await weights(update, context)
+
+
+async def last_seen_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Manual observation from in-game leader list, NEVER an inferred API last-online."""
+    if not update.message or not update.effective_user or not ensure_private_chat(update):
+        return
+    if not await has_captain_access(update, context):
+        await update.message.reply_text("Ручное время входа может указывать только руководство.")
+        return
+    if len(context.args) != 2:
+        await update.message.reply_text(
+            "Используй /lastseen #ТЕГ 3 — если в игре показано «3 дня назад».\n"
+            "Для очистки: /lastseen #ТЕГ clear\n"
+            "CoC API не предоставляет точное время последнего входа."
+        )
+        return
+    try:
+        tag = normalize_tag(context.args[0])
+        days = None if context.args[1].lower() == "clear" else float(context.args[1])
+        if days is not None and (not 0 <= days <= 30):
+            raise ValueError
+    except (InvalidTagError, ValueError):
+        await update.message.reply_text("Укажи корректный тег и число дней от 0 до 30 либо clear.")
+        return
+    # Do not record non-clan members or unverified nickname guesses.
+    try:
+        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+            roster = await fetch_json(client, "/clan")
+        if tag not in {m.get("tag") for m in roster.get("memberList") or []}:
+            await update.message.reply_text("Игрока с этим тегом сейчас нет в клане.")
+            return
+        now = datetime.now(timezone.utc)
+        stamp = (now - timedelta(days=days)).isoformat() if days is not None else None
+        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+            resp = await client.post(build_url(f"/selection/lastseen/{encode_tag(tag)}"),
+                                     json={"last_seen_at": stamp,
+                                           "reported_by": update.effective_user.id})
+            resp.raise_for_status()
+    except (httpx.HTTPStatusError, httpx.RequestError):
+        await update.message.reply_text("Не удалось сохранить отметку активности.")
+        return
+    message = (f"Ручная отметка последнего входа {tag}: {days:g} дн. назад."
+               if days is not None else f"Для {tag} ручная отметка очищена.")
+    await update.message.reply_text(message + "\nИсточник: наблюдение руководства в игре, НЕ CoC API.")
+
+
+
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.callback_query:
         return
@@ -847,6 +1067,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "menu_captain": captain_report,
         "menu_player": player,
         "menu_profile": player,
+        "menu_accounts": accounts,
         "menu_help": help_command,
     }
     if action in handlers:
@@ -1610,6 +1831,14 @@ async def main() -> None:
     application.add_handler(CommandHandler("ping", ping))
     application.add_handler(CommandHandler("bind", bind))
     application.add_handler(CommandHandler("unbind", unbind))
+    application.add_handler(CommandHandler("accounts", accounts))
+    application.add_handler(CommandHandler("primary", primary_account))
+    application.add_handler(CommandHandler("unlink", unlink))
+    application.add_handler(CommandHandler("adminunlink", admin_unlink))
+    application.add_handler(CommandHandler("cwlopt", cwl_opt))
+    application.add_handler(CommandHandler("weights", weights))
+    application.add_handler(CommandHandler("setweight", set_weight))
+    application.add_handler(CommandHandler("lastseen", last_seen_report))
     application.add_handler(CommandHandler("mytag", mytag))
     application.add_handler(CommandHandler("chatid", chatid))
     application.add_handler(CommandHandler("grouplink", grouplink))
