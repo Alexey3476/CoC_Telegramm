@@ -75,3 +75,17 @@ Beerlogger01/main already published version 0.2.1. This post-merge QA release us
 - For CWL only, the strength component now uses 80% Town Hall proxy relative to the strongest TH in the clan and 20% same-TH relative strength. Overall CWL weights: strength 45%, used attacks 20%, attack quality 25%, CoC role 10%. Regular KV weights remain 20% strength, 35% discipline, 35% attack quality, 10% CoC role. A one-time SQLite migration upgrades untouched older CWL weights but preserves custom leader-set values.
 - Experience level and ranked tier are imperfect evidence; the public CoC API **does not expose actual building/defense/wall levels**, so this is not a true defensive base strength measurement. In absence of same-TH peers, relative index stays neutral at 50 and displays low coverage.
 - New **/ranking** command and **🏅 Рейтинг** button under Clan, Players, and main menu show ALL clan members on pages, sortable by KV/CWL mode. A player with red CoC consent remains visible in the informational rank but cannot be automatically picked for war.
+
+## CoC clan co-leader nomination poll
+
+In a PRIVATE Telegram chat, a verified in-game leader or co-leader can start a group poll via /deputyvote #TAG1 #TAG2 (two to ten CoC member candidates). There is also a shortcut in /staff. It sends a non-anonymous Telegram poll to the configured clan group. /deputyresults counts only verified Telegram owners who still control accounts in this clan, and /deputyclose finishes the poll. A person with four verified alternate game accounts has only one vote.
+
+Native Telegram poll totals may include unverified group participants; use the bot-validated /deputyresults for the trusted count. Closing or reopening a poll never changes CoC or Telegram roles. The leader must make any rank changes in the game manually.
+
+## CWL table and strength
+
+The /cwl page shows all seven rounds and a full calculated table for the clan group. Winners receive ten extra CWL ranking stars per completed war; cumulative destruction breaks star ties. Partial API data and in-progress rounds are explicitly provisional. CWL recommendations remain 15v15; ordinary war sizes may be chosen in multiples of five from 5 to 50, including 20, 25, 30, 35, 40 and 45.
+
+Compared with the old hero-only score, account ranking now also considers Experience Level, ranked league and CoC clan role. CWL gives priority to absolute Town Hall strength; ordinary wars compare within equal-Town-Hall cohorts. Building/wall levels and exact current online/last-login data are NOT provided by the official public CoC API; do not present experience or donations as proof of exact defensive upgrades or live online status.
+
+The /ranking button in the main menu and /hall show the complete pageable player ranking and measured donation, war and raid leaderboards.
