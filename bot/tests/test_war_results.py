@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import random
 
 from app.war_results import PHRASES, WarAnnouncementStore, classify_result, format_result, recently_finished, war_identity

@@ -1551,15 +1551,17 @@ def format_top_players(payload: dict[str, Any]) -> str:
         if not members:
             lines.append("Данных пока нет.")
         for index, player in enumerate(members, 1):
-            name = html.escape(str(player.get("name") or "Игрок"))
-            th = html.escape(str(player.get("townHallLevel") or "?"))
-            donations = html.escape(str(player.get("donations") or 0))
-            attacks = html.escape(str(player.get("warAttacks") or 0))
+            # HTML names must be escaped, and each dynamic field is bounded.
+            # Never truncate final HTML: cutting inside &amp; or <b> breaks Telegram.
+            name = html.escape(str(player.get("name") or "Игрок")[:48])
+            th = html.escape(str(player.get("townHallLevel") or "?")[:8])
+            donations = html.escape(str(player.get("donations") if player.get("donations") is not None else 0)[:12])
+            attacks = html.escape(str(player.get("warAttacks") if player.get("warAttacks") is not None else 0)[:12])
             lines.append(
                 f"{index}. <b>{name}</b> · TH{th}\n"
                 f"    💰 {donations} доната · ⚔️ {attacks} атак"
             )
-    return "\n".join(lines)[:4000]
+    return "\n".join(lines)
 
 
 async def top_players(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
