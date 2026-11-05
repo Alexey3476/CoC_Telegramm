@@ -69,3 +69,32 @@ class ProgressStore:
         result = compare(json.loads(baseline[1]) if baseline else None, current)
         return {"tag": tag, "name": profile.get("name"), "snapshotDay": day,
                 "comparisonDay": baseline[0] if baseline else None, **result}
+
+
+    def timeline(self, tag: str, days: int = 7, now: datetime | None = None) -> dict:
+        """Show observed differences across calendar days, one series per game tag.
+
+        0 means all time. Missing historical snapshots are never reconstructed.
+        """
+        if days not in {0, 7, 30}:
+            raise ValueError("days must be 0, 7 or 30")
+        now = now or datetime.now(timezone.utc)
+        from datetime import timedelta
+        since = (now - timedelta(days=days)).date().isoformat() if days else None
+        with sqlite3.connect(self.path, timeout=10) as conn:
+            if since:
+                rows = conn.execute(
+                    "SELECT day,data FROM player_snapshots WHERE tag=? AND day>=? ORDER BY day",
+                    (tag, since),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT day,data FROM player_snapshots WHERE tag=? ORDER BY day", (tag,),
+                ).fetchall()
+        series = [{"day": day, "metrics": json.loads(data)} for day,data in rows]
+        before = series[0]["metrics"] if len(series) > 1 else None
+        latest = series[-1]["metrics"] if series else {}
+        result = compare(before, latest)
+        return {"tag": tag, "snapshotDay": series[-1]["day"] if series else None,
+                "comparisonDay": series[0]["day"] if len(series) > 1 else None,
+                "snapshotCount": len(series), "series": series, **result}

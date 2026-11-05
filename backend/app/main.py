@@ -252,10 +252,11 @@ async def cwl(request: Request):
 
 
 @app.get("/progress/{tag}")
-async def progress(tag: str, request: Request):
+async def progress(tag: str, request: Request, days: int = 7):
     try:
         profile = await get_player(get_http_client(request), get_redis(request), tag)
-        return request.app.state.progress.record(profile)
+        request.app.state.progress.record(profile)
+        return {**request.app.state.progress.timeline(profile["tag"], days=days), "name": profile.get("name")}
     except InvalidTagError as exc:
         raise HTTPException(status_code=400, detail="Invalid player tag") from exc
     except NotFoundError as exc:
