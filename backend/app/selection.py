@@ -61,6 +61,18 @@ class SelectionStore:
             for mode, values in MODE_WEIGHTS.items():
                 conn.executemany("INSERT OR IGNORE INTO mode_weights VALUES(?,?,?)",
                                  [(mode, metric, value) for metric, value in values.items()])
+            # Upgrade only the untouched v0.2.2 CWL defaults. A captain's
+            # explicitly customized mode weights must survive the update.
+            previous_cwl = dict(conn.execute(
+                "SELECT metric,value FROM mode_weights WHERE mode='cwl'"))
+            if previous_cwl == {
+                "strength": 20.0, "discipline": 35.0,
+                "quality": 40.0, "role": 5.0,
+            }:
+                conn.executemany(
+                    "UPDATE mode_weights SET value=? WHERE mode='cwl' AND metric=?",
+                    [(value, key) for key, value in MODE_WEIGHTS["cwl"].items()],
+                )
 
     def weights(self, mode: str | None = None) -> dict[str, float]:
         with sqlite3.connect(self.path, timeout=10) as conn:
