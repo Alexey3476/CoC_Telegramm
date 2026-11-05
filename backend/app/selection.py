@@ -76,7 +76,6 @@ class SelectionStore:
         defaults = MODE_WEIGHTS.get(mode) if mode is not None else DEFAULT_WEIGHTS
         if defaults is None or metric not in defaults or not 0 <= percent <= 100:
             raise ValueError("Invalid mode/metric or weight; use 0..100")
-        table = "mode_weights" if mode else "weights"
         with sqlite3.connect(self.path, timeout=10) as conn:
             conn.execute("BEGIN IMMEDIATE")
             previous = self.weights(mode)
