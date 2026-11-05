@@ -1,4 +1,4 @@
-from app.bot import attacks_used, extract_tag, normalize_tag
+from app.bot import attacks_used, extract_tag, format_player, normalize_tag
 
 
 def test_extract_tag_from_message():
@@ -19,3 +19,16 @@ def test_attacks_used():
 def test_player_token_setting_default():
     from app.settings import Settings
     assert Settings().require_player_verification is True
+
+
+def test_player_names_are_escaped_for_legacy_markdown():
+    message = format_player(
+        {
+            "name": "A_*[Player]",
+            "tag": "#2PRGP0L22",
+            "clan": {"name": "Clan_(test)"},
+        }
+    )
+
+    assert r"A\_\*\[Player]" in message
+    assert r"Clan\_(test)" in message

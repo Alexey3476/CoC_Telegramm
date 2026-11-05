@@ -63,59 +63,145 @@ class BindingsStorage:
                 )
                 """
             )
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS linked_accounts (
+                    group_id INTEGER NOT NULL,
+                    telegram_user_id INTEGER NOT NULL,
+                    coc_player_tag TEXT NOT NULL,
+                    telegram_username TEXT NULL,
+                    telegram_full_name TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(group_id, coc_player_tag)
+                )"""
+            )
+            conn.execute(
+                """CREATE INDEX IF NOT EXISTS idx_linked_accounts_user
+                   ON linked_accounts(group_id, telegram_user_id)"""
+            )
+            # Additive migration, never destroy existing primary bindings.
+            conn.execute(
+                """INSERT OR IGNORE INTO linked_accounts
+                   (group_id, telegram_user_id, coc_player_tag,
+                    telegram_username, telegram_full_name, created_at)
+                   SELECT group_id, telegram_user_id, coc_player_tag,
+                          telegram_username, telegram_full_name, created_at
+                   FROM bindings"""
+            )
             conn.commit()
         self._logger.info("Bindings schema ensured path=%s", self.db_path)
 
     def upsert_binding(self, binding: Binding) -> None:
+        """Safely add an alt, keeping the first verified account as primary."""
         with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            owner = conn.execute(
+                "SELECT telegram_user_id FROM linked_accounts WHERE group_id=? AND coc_player_tag=?",
+                (binding.group_id, binding.coc_player_tag),
+            ).fetchone()
+            if owner is not None and int(owner[0]) != binding.telegram_user_id:
+                raise ValueError("Player account is already linked to another Telegram user")
             conn.execute(
-                """
-                INSERT INTO bindings (
-                    telegram_user_id,
-                    group_id,
-                    coc_player_tag,
-                    telegram_username,
-                    telegram_full_name,
-                    created_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(group_id, telegram_user_id) DO UPDATE SET
-                    coc_player_tag=excluded.coc_player_tag,
-                    telegram_username=excluded.telegram_username,
-                    telegram_full_name=excluded.telegram_full_name,
-                    created_at=excluded.created_at
-                """,
-                (
-                    binding.telegram_user_id,
-                    binding.group_id,
-                    binding.coc_player_tag,
-                    binding.telegram_username,
-                    binding.telegram_full_name,
-                    binding.created_at,
-                ),
+                """INSERT INTO linked_accounts
+                (group_id,telegram_user_id,coc_player_tag,telegram_username,telegram_full_name,created_at)
+                VALUES(?,?,?,?,?,?)
+                ON CONFLICT(group_id,coc_player_tag) DO UPDATE SET
+                  telegram_username=excluded.telegram_username,
+                  telegram_full_name=excluded.telegram_full_name""",
+                (binding.group_id,binding.telegram_user_id,binding.coc_player_tag,
+                 binding.telegram_username,binding.telegram_full_name,binding.created_at),
             )
+            primary = conn.execute(
+                "SELECT coc_player_tag FROM bindings WHERE group_id=? AND telegram_user_id=?",
+                (binding.group_id,binding.telegram_user_id),
+            ).fetchone()
+            if primary is None:
+                self._write_primary(conn, binding)
             conn.commit()
-        self._logger.info(
-            "Binding upserted group_id=%s user_id=%s tag=%s",
-            binding.group_id,
-            binding.telegram_user_id,
-            binding.coc_player_tag,
+
+    @staticmethod
+    def _write_primary(conn: sqlite3.Connection, binding: Binding) -> None:
+        conn.execute(
+            """INSERT INTO bindings
+            (telegram_user_id,group_id,coc_player_tag,telegram_username,telegram_full_name,created_at)
+            VALUES(?,?,?,?,?,?)
+            ON CONFLICT(group_id,telegram_user_id) DO UPDATE SET
+              coc_player_tag=excluded.coc_player_tag,
+              telegram_username=excluded.telegram_username,
+              telegram_full_name=excluded.telegram_full_name,
+              created_at=excluded.created_at""",
+            (binding.telegram_user_id,binding.group_id,binding.coc_player_tag,
+             binding.telegram_username,binding.telegram_full_name,binding.created_at),
         )
 
-    def delete_binding(self, group_id: int, telegram_user_id: int) -> bool:
+    def get_user_accounts(self, group_id: int, user_id: int) -> list[Binding]:
+        """Primary tag first, followed by verified alternate accounts."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT a.* FROM linked_accounts a
+                LEFT JOIN bindings b ON b.group_id=a.group_id AND b.telegram_user_id=a.telegram_user_id
+                WHERE a.group_id=? AND a.telegram_user_id=?
+                ORDER BY (a.coc_player_tag=b.coc_player_tag) DESC, a.created_at ASC, a.coc_player_tag""",
+                (group_id, user_id),
+            ).fetchall()
+        return [self._row_to_binding(row) for row in rows]
+
+    def set_primary_account(self, group_id: int, user_id: int, tag: str) -> bool:
         with self._lock, self._connect() as conn:
-            cursor = conn.execute(
-                "DELETE FROM bindings WHERE group_id = ? AND telegram_user_id = ?",
-                (group_id, telegram_user_id),
-            )
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM linked_accounts WHERE group_id=? AND telegram_user_id=? AND coc_player_tag=?",
+                (group_id,user_id,tag),
+            ).fetchone()
+            if row is None:
+                return False
+            self._write_primary(conn, self._row_to_binding(row))
             conn.commit()
-            removed = cursor.rowcount > 0
-        self._logger.info(
-            "Binding delete group_id=%s user_id=%s removed=%s",
-            group_id,
-            telegram_user_id,
-            removed,
-        )
-        return removed
+            return True
+
+    def unlink_account(self, group_id: int, tag: str, owner_id: int | None = None) -> bool:
+        """Delete one verified tag; optionally require ownership. Promotes an alt."""
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT telegram_user_id FROM linked_accounts WHERE group_id=? AND coc_player_tag=?",
+                (group_id,tag),
+            ).fetchone()
+            if row is None or (owner_id is not None and int(row[0]) != owner_id):
+                return False
+            user_id = int(row[0])
+            conn.execute(
+                "DELETE FROM linked_accounts WHERE group_id=? AND coc_player_tag=?", (group_id,tag))
+            primary = conn.execute(
+                "SELECT coc_player_tag FROM bindings WHERE group_id=? AND telegram_user_id=?",
+                (group_id,user_id),
+            ).fetchone()
+            if primary is not None and primary[0] == tag:
+                new = conn.execute(
+                    """SELECT * FROM linked_accounts WHERE group_id=? AND telegram_user_id=?
+                    ORDER BY created_at ASC,coc_player_tag LIMIT 1""",
+                    (group_id,user_id),
+                ).fetchone()
+                if new is None:
+                    conn.execute(
+                        "DELETE FROM bindings WHERE group_id=? AND telegram_user_id=?",
+                        (group_id,user_id))
+                else:
+                    self._write_primary(conn,self._row_to_binding(new))
+            conn.commit()
+            return True
+
+    def delete_binding(self, group_id: int, telegram_user_id: int) -> bool:
+        """Remove ALL of a user's verified accounts; /unlink removes just one."""
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            c1 = conn.execute(
+                "DELETE FROM linked_accounts WHERE group_id=? AND telegram_user_id=?",
+                (group_id,telegram_user_id))
+            c2 = conn.execute(
+                "DELETE FROM bindings WHERE group_id=? AND telegram_user_id=?",
+                (group_id,telegram_user_id))
+            conn.commit()
+            return c1.rowcount > 0 or c2.rowcount > 0
 
     def get_binding(self, group_id: int, telegram_user_id: int) -> Binding | None:
         with self._connect() as conn:
@@ -149,7 +235,7 @@ class BindingsStorage:
         placeholders = ",".join(["?"] * len(tags_list))
         with self._connect() as conn:
             rows = conn.execute(
-                f"SELECT * FROM bindings WHERE group_id = ? AND coc_player_tag IN ({placeholders})",
+                f"SELECT * FROM linked_accounts WHERE group_id = ? AND coc_player_tag IN ({placeholders})",
                 (group_id, *tags_list),
             ).fetchall()
         bindings = [binding for row in rows if (binding := self._row_to_binding(row))]
@@ -165,7 +251,7 @@ class BindingsStorage:
         """Get telegram user ID by CoC player tag."""
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT telegram_user_id FROM bindings WHERE group_id = ? AND coc_player_tag = ?",
+                "SELECT telegram_user_id FROM linked_accounts WHERE group_id = ? AND coc_player_tag = ?",
                 (group_id, coc_tag),
             ).fetchone()
         if row:

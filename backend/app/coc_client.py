@@ -11,6 +11,8 @@ from app.cache import TTLCache
 from app.cache import get_cached_json, set_cached_json
 from app.settings import settings
 from app.war_history import WarHistory, summarize_wars
+from app.selection import SelectionStore, score_and_categorize
+from app.war_metrics import missed_war_streak, missed_current_cwl
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +114,7 @@ async def get_regular_war(client: httpx.AsyncClient, redis: TTLCache) -> dict[st
 
 
 async def get_league_wars(
-    client: httpx.AsyncClient, redis: TTLCache
+    client: httpx.AsyncClient, redis: TTLCache, *, include_all: bool = False
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Fetch current CWL group and this clan's round wars (bounded concurrency)."""
     clan_tag = normalize_tag(settings.coc_clan_tag)
@@ -137,12 +139,99 @@ async def get_league_wars(
                     f"{settings.coc_api_base}/clanwarleagues/wars/{encode_tag(tag)}",
                 )
                 teams = (data.get("clan") or {}, data.get("opponent") or {})
-                return data if any(team.get("tag") == clan_tag for team in teams) else None
+                if include_all or any(team.get("tag") == clan_tag for team in teams):
+                    return {**data, "_leagueWarTag": tag}
+                return None
             except (NotFoundError, RateLimitError, ForbiddenError, RuntimeError, TimeoutError):
                 return None
 
     fetched = await asyncio.gather(*(fetch_one(tag) for tag in tags[:40]))
     return group, [war for war in fetched if war is not None]
+
+
+def summarize_cwl(group: dict[str, Any], wars: list[dict[str, Any]], clan_tag: str) -> dict[str, Any]:
+    """Our own observed CWL results; never invent the official league standings."""
+    observed = []
+    seen = set()
+    for war in sorted(wars, key=lambda x: x.get("startTime") or ""):
+        own, enemy = war.get("clan") or {}, war.get("opponent") or {}
+        if enemy.get("tag") == clan_tag:
+            own, enemy = enemy, own
+        if own.get("tag") != clan_tag:
+            continue
+        identity = (war.get("startTime"), enemy.get("tag"))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        s, e = int(own.get("stars") or 0), int(enemy.get("stars") or 0)
+        d = float(own.get("destructionPercentage") or 0) - float(enemy.get("destructionPercentage") or 0)
+        result = "pending"
+        if war.get("state") == "warEnded":
+            result = "win" if s > e or (s == e and d > 0) else ("draw" if s == e and d == 0 else "loss")
+        observed.append({
+            "enemy": enemy.get("name") or "Соперник", "result": result,
+            "stars": s, "enemyStars": e, "startTime": war.get("startTime"),
+        })
+    return {
+        "state": group.get("state") or "notInWar",
+        "scheduledRounds": len(group.get("rounds") or []),
+        "observedRounds": len(observed),
+        "wins": sum(x["result"] == "win" for x in observed),
+        "draws": sum(x["result"] == "draw" for x in observed),
+        "losses": sum(x["result"] == "loss" for x in observed),
+        "rounds": observed,
+    }
+
+
+async def get_cwl_summary(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
+    from app.cwl_standings import group_standings
+    group, wars = await get_league_wars(client, redis, include_all=True)
+    clan_tag = normalize_tag(settings.coc_clan_tag)
+    summary = summarize_cwl(group, wars, clan_tag)
+    summary["standings"] = group_standings(group, wars, clan_tag)
+    summary["clanTag"] = clan_tag
+    by_tag = {war["_leagueWarTag"]: war for war in wars if war.get("_leagueWarTag")}
+
+    slots = []
+    for index, round_data in enumerate(group.get("rounds") or [], 1):
+        our_war = next((by_tag[tag] for tag in round_data.get("warTags") or []
+                        if tag in by_tag and any(
+                            (side or {}).get("tag") == clan_tag
+                            for side in (by_tag[tag].get("clan"), by_tag[tag].get("opponent"))
+                        )), None)
+        if our_war:
+            a, b = our_war.get("clan") or {}, our_war.get("opponent") or {}
+            enemy = b if a.get("tag") == clan_tag else a
+            ours = a if a.get("tag") == clan_tag else b
+            stars = ours.get("stars")
+            enemy_stars = enemy.get("stars")
+            result = "pending"
+            if (our_war.get("state") == "warEnded"
+                and stars is not None and enemy_stars is not None
+                and ours.get("destructionPercentage") is not None
+                and enemy.get("destructionPercentage") is not None):
+                from app.cwl_standings import outcome
+                value = outcome(ours, enemy)
+                result = "win" if value > 0 else "loss" if value < 0 else "draw"
+            slots.append({"round": index,
+                          "enemy": enemy.get("name") or "Соперник",
+                          "result": result,
+                          "stars": stars, "enemyStars": enemy_stars,
+                          "startTime": our_war.get("startTime")})
+        else:
+            slots.append({"round": index, "result": "upcoming",
+                          "enemy": "Ещё не известен", "stars": None, "enemyStars": None})
+    summary["rounds"] = slots
+    return summary
+
+
+def orient_war_for_clan(war: dict[str, Any], clan_tag: str) -> dict[str, Any]:
+    """Keep our side under 'clan', even when CWL represents us as opponent."""
+    home = war.get("clan") or {}
+    away = war.get("opponent") or {}
+    if home.get("tag") != clan_tag and away.get("tag") == clan_tag:
+        return {**war, "clan": away, "opponent": home}
+    return war
 
 
 async def get_war(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
@@ -154,10 +243,11 @@ async def get_war(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
     live = [war for war in wars if war.get("state") in {"preparation", "inWar"}]
     if not live:
         return regular
-    return max(
+    selected = max(
         live,
         key=lambda war: (war.get("state") == "inWar", war.get("startTime") or ""),
     )
+    return orient_war_for_clan(selected, normalize_tag(settings.coc_clan_tag))
 
 
 async def get_clan_members(client: httpx.AsyncClient, redis: TTLCache, limit: int = 50) -> dict[str, Any]:
@@ -175,8 +265,6 @@ async def get_clan_members(client: httpx.AsyncClient, redis: TTLCache, limit: in
 
 async def get_clan_activity_report(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
     """Get comprehensive clan activity report."""
-    clan_tag = normalize_tag(settings.coc_clan_tag)
-    
     # Get clan data
     clan_data = await get_clan(client, redis)
     members = clan_data.get("memberList", [])
@@ -257,77 +345,35 @@ async def get_clan_activity_report(client: httpx.AsyncClient, redis: TTLCache) -
     }
 
 async def get_clan_raids(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
-    """Get clan raids (capital games) information."""
+    """Return the latest real raid season, including completed results."""
     clan_tag = normalize_tag(settings.coc_clan_tag)
-    cache_key = f"raids:{clan_tag}"
-    url = f"{settings.coc_api_base}/clans/{encode_tag(clan_tag)}/capitalraidseasons"
-    
-    try:
-        data = await fetch_with_cache(client, redis, cache_key, url)
-        
-        # Get current raid if available
-        items = data.get("items", [])
-        if not items:
-            return {"currentRaid": None}
-        
-        # Most recent raid is first
-        current = items[0]
-        state = current.get("state", "unknown")
-        
-        # Parse dates
-        start_time = current.get("startTime", "N/A")
-        end_time = current.get("endTime", "N/A")
-        
-        raid_info = {
-            "state": state,
-            "capitalName": "Capital Raid",
-            "startTime": start_time,
-            "endTime": end_time,
-        }
-        
-        # If ongoing, include resource details
-        if state == "ongoing":
-            clan_capital = current.get("clan", {})
-            resources = clan_capital.get("resources", [])
-            raid_info["clan"] = {"resources": resources}
-        
-        return {"currentRaid": raid_info}
-    except Exception:
-        logger.exception("Failed to get clan raids")
+    data = await fetch_with_cache(
+        client, redis, f"raids:{clan_tag}",
+        f"{settings.coc_api_base}/clans/{encode_tag(clan_tag)}/capitalraidseasons",
+    )
+    items = data.get("items") or []
+    if not items:
         return {"currentRaid": None}
+    latest = items[0]
+    fields = ("state", "startTime", "endTime", "capitalTotalLoot", "raidsCompleted",
+              "totalAttacks", "offensiveReward", "defensiveReward", "members")
+    return {"currentRaid": {key: latest[key] for key in fields if key in latest}}
+
 
 async def get_clan_games(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
-    """Get clan games information."""
+    """Report that Clan Games progress is not exposed by the public API."""
     clan_tag = normalize_tag(settings.coc_clan_tag)
     cache_key = f"games:{clan_tag}"
     url = f"{settings.coc_api_base}/clans/{encode_tag(clan_tag)}"
     
-    try:
-        data = await fetch_with_cache(client, redis, cache_key, url)
-        
-        # The official clan payload does not consistently expose Clan Games progress.
-        clan_games = data.get("clanGames", {})
-        if not clan_games:
-            return {"currentGames": None, "unsupported": True}
-        
-        state = clan_games.get("state", "notInProgress")
-        start_time = clan_games.get("startTime", "N/A")
-        end_time = clan_games.get("endTime", "N/A")
-        
-        games_info = {
-            "state": state,
-            "startTime": start_time,
-            "endTime": end_time,
+    data = await fetch_with_cache(client, redis, cache_key, url)
+    if not data.get("clanGames"):
+        return {
+            "currentGames": None,
+            "unsupported": True,
+            "message": "Clan Games progress is not available in the public API.",
         }
-        
-        # If in progress, include score details
-        if state == "inProgress":
-            games_info["score"] = clan_games.get("memberGameInfo", {}).get("totalScore", "N/A")
-        
-        return {"currentGames": games_info}
-    except Exception:
-        logger.exception("Failed to get clan games")
-        return {"currentGames": None}
+    return {"currentGames": data["clanGames"], "unsupported": False}
 
 
 async def get_player_activity(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
@@ -386,15 +432,44 @@ async def get_next_war_analysis(
     client: httpx.AsyncClient,
     redis: TTLCache,
     history: WarHistory | None = None,
+    policy: SelectionStore | None = None,
+    mode: str = "war",
+    requested_size: int | None = None,
 ) -> dict[str, Any]:
     """Evidence-based lineup. Unknown history is missing data, not zero performance."""
     clan_data = await get_clan(client, redis)
     members = clan_data.get("memberList", [])
     clan_tag = normalize_tag(settings.coc_clan_tag)
-    history_stats = summarize_wars(history.completed(20), clan_tag) if history else {}
+    archived = history.completed(100) if history else []
+    # Old snapshots without explicit kind are accepted only for ordinary war
+    # when they expose the standard two-attack limit. Future snapshots have
+    # unambiguous _warKind from the collector.
+    regular_archive = [w for w in archived if w.get("_warKind") == "war"
+                       or (not w.get("_warKind") and w.get("attacksPerMember") == 2)]
+    cwl_archive = [w for w in archived if w.get("_warKind") == "cwl"]
+    history_stats = summarize_wars(regular_archive, clan_tag)
+    cwl_history = summarize_wars(cwl_archive, clan_tag)
+    missed_streaks = missed_war_streak(archived, clan_tag)
+    current_cwl_missed = set()
+    try:
+        active_group, active_wars = await get_league_wars(client, redis)
+        if active_group.get("state") in {"inWar", "preparation"}:
+            current_cwl_missed = missed_current_cwl(active_wars, clan_tag)
+    except (NotFoundError, ForbiddenError, RateLimitError, RuntimeError, TimeoutError):
+        pass
+    raids = {}
+    try:
+        latest_raids = await get_clan_raids(client, redis)
+        current_raid = latest_raids.get("currentRaid") or {}
+        raids = {m.get("tag"): int(m.get("capitalResourcesLooted") or 0)
+                 for m in current_raid.get("members") or [] if m.get("tag")}
+    except (NotFoundError, ForbiddenError, RateLimitError, RuntimeError, TimeoutError):
+        pass
+    suggested_size = 15
     try:
         war_data = await get_war(client, redis)
         current_state = war_data.get("state", "unknown")
+        suggested_size = max(5, min(50, int(war_data.get("teamSize") or 15))) if mode == "war" else 15
     except (NotFoundError, ForbiddenError, RateLimitError, RuntimeError, TimeoutError):
         current_state = "unavailable"
     try:
@@ -403,6 +478,11 @@ async def get_next_war_analysis(
         cwl_state = cwl_data.get("state", "unknown")
     except (NotFoundError, ForbiddenError, RateLimitError, RuntimeError, TimeoutError):
         cwl_state = "unavailable"
+
+    if mode == "cwl":
+        suggested_size = 15  # This clan registers the 15v15 CWL format.
+    elif requested_size is not None:
+        suggested_size = requested_size
 
     semaphore = asyncio.Semaphore(5)
 
@@ -421,11 +501,15 @@ async def get_next_war_analysis(
         if not tag:
             continue
         town_hall = int(profile.get("townHallLevel") or member.get("townHallLevel") or 0)
-        heroes_level = sum(int(hero.get("level", 0)) for hero in profile.get("heroes", []))
+        # Builder Base heroes cannot attack in Home Village wars/CWL.
+        heroes_level = sum(int(hero.get("level", 0)) for hero in profile.get("heroes", [])
+                           if hero.get("village") != "builderBase"
+                           and hero.get("name") not in {"Battle Machine", "Battle Copter"})
         equipped = [e for e in profile.get("heroEquipment", []) if e.get("level")]
         equipment_level = sum(int(item.get("level", 0)) for item in equipped)
         preference = profile.get("warPreference", "unknown")
         previous = history_stats.get(tag)
+        cwl_previous = cwl_history.get(tag)
         # TH matters for matchmaking, but is not evidence of reliability.
         combat_score = round(
             min(60, town_hall * 3.3)
@@ -444,7 +528,13 @@ async def get_next_war_analysis(
             "warStars": profile.get("warStars"),
             "donations": member.get("donations", 0),
             "warPreference": preference,
-            "league": (profile.get("league") or member.get("league") or {}).get("name", "Unknown"),
+            "role": profile.get("role") or member.get("role") or "member",
+            "raidLoot": raids.get(tag),
+            "missedWarsInARow": missed_streaks.get(tag, 0),
+            "missedThisCWL": tag in current_cwl_missed,
+            "cwlHistory": cwl_previous or {},
+            "league": ((profile.get("leagueTier") or profile.get("league")
+                        or member.get("leagueTier") or member.get("league") or {}).get("name", "Unknown")),
             "heroesLevel": heroes_level if profile else None,
             "heroEquipmentScore": equipment_level if profile else None,
             "heroEquipmentCount": len(equipped) if profile else None,
@@ -457,22 +547,34 @@ async def get_next_war_analysis(
             "combatReadiness": combat_score,
             "warReadiness": readiness,
         })
-    ranking.sort(
-        key=lambda m: (m["warPreference"] != "in", -m["warReadiness"], -(m["townHallLevel"] or 0))
-    )
+    for member in ranking:
+        ch = member.get("cwlHistory") or {}
+        member["cwlWars"] = ch.get("wars", 0)
+        member["cwlAverageStars"] = ch.get("averageStars")
+        member["cwlMissedAttacks"] = ch.get("missedAttacks")
+    if policy:
+        selected = score_and_categorize(
+            ranking, policy.weights(mode), policy.get_preferences(clan_tag),
+            mode=mode, size=suggested_size,
+        )
+    else:
+        ranking.sort(key=lambda m: (m["warPreference"] != "in", -m["warReadiness"],
+                                   -(m["townHallLevel"] or 0)))
+        selected = {"recommendedLineup": ranking, "recommendedSize": suggested_size}
     return {
+        **selected,
+        "selectionRequestedSize": suggested_size,
         "clanName": clan_data.get("name"),
         "clanTag": clan_data.get("tag"),
         "cwlState": cwl_state,
         "currentWarState": current_state,
-        "recommendedLineup": ranking,
-        "topTen": ranking[:10],
+        "topTen": selected["recommendedLineup"][:10],
         "historyKnown": bool(history_stats),
-        "observedWarCount": len(history.completed(20)) if history else 0,
+        "observedWarCount": len(archived),
         "analysisFactors": {
             "lastWarPerformance": "Только сохранённые завершённые войны: пропуски, звёзды и уровень цели. Неизвестное не считается нулём.",
-            "combatReadiness": "Ратуша, уровни героев и снаряжения (если профиль доступен).",
-            "warReadiness": "55% подтверждённой военной статистики и 45% силы; при отсутствии истории только сила.",
-            "sortedBy": "Предпочтение участия, затем расчётный рейтинг",
+            "combatReadiness": "Сравнение уровней героев, снаряжения и лиги только среди участников с той же ратушей; без сверстников оценка нейтральная.",
+            "warReadiness": "Сравнивай вклад компонентов в таблице весов. Пропуски и уровень цели учитываются только при наличии истории.",
+            "sortedBy": "Категория доступности, затем взвешенный балл по имеющимся сигналам",
         },
     }
