@@ -375,12 +375,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 f"3️⃣ Присоединиться\n\n"
                 f"Начнём с привязки!",
                 reply_markup=bind_keyboard(),
-                parse_mode=ParseMode.MARKDOWN,
             )
             return
         # Group chat
         await update.message.reply_text(
-            "🎮 Привет! Напиши мне в личку (@bot_username) чтобы привязать аккаунт и присоединиться к группе!"
+            f"🎮 Привет! Напиши мне в личку (@{context.bot.username}), чтобы привязать игровой аккаунт."
         )
     except Exception as e:  # noqa: BLE001
         logger.error("Failed to handle /start: %s", e, exc_info=settings.debug)
@@ -1113,47 +1112,22 @@ async def verify_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if coc_name:
             await assign_game_tag(context, update.effective_chat.id, member.id, coc_name)
 
-        # Create welcome message
+        # Welcome without pinning every new member or requiring pin permissions.
         if coc_name:
             message = (
                 f"✅ {mention}\n"
                 f"🎮 <b>Ник в игре:</b> {html.escape(coc_name)}\n"
-                f"🏷️ *Тег:* {player_tag}\n"
-                f"Добро пожаловать в клан! 🎉"
+                f"🏷️ <b>Тег:</b> {player_tag}\n"
+                "Добро пожаловать в клан! 🎉"
             )
         else:
             message = f"✅ {mention} присоединился как {player_tag}"
-        
         try:
-            reply_msg = await update.message.reply_text(
-                message,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
+            await update.message.reply_text(
+                message, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
             )
-            # Pin the welcome message for a few seconds
-            try:
-                await context.bot.pin_chat_message(
-                    chat_id=update.effective_chat.id,
-                    message_id=reply_msg.message_id,
-                    disable_notification=True,
-                )
-                # Unpin after 30 seconds
-                async def unpin_later():
-                    await asyncio.sleep(30)
-                    try:
-                        await context.bot.unpin_chat_message(
-                            chat_id=update.effective_chat.id,
-                            message_id=reply_msg.message_id,
-                        )
-                    except Exception:  # noqa: BLE001
-                        pass
-                
-                # Run unpin in background
-                asyncio.create_task(unpin_later())
-            except Exception:  # noqa: BLE001
-                pass  # Pinning not critical
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Failed to announce member user_id=%s error=%s", member.id, exc)
+        except Exception:
+            logger.warning("Could not send welcome message for member user_id=%s", member.id)
 
 
 async def weekly_activity_report_job(context: ContextTypes.DEFAULT_TYPE) -> None:
