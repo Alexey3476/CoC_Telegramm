@@ -62,3 +62,7 @@ Daily public player-profile snapshots are saved in `/data/player_progress.db` wi
 - Enable or disable greetings with the Home Assistant option `war_results_enabled` (enabled by default). It requires `clan_group_id`, an admin bot that may send messages, and accessible Clash API results.
 - Polling runs approximately every 3 minutes, but the backend may take up to 5 minutes to capture a completed war. The bot will not repost already seen results on restart.
 - The tracker reserves an announcement before Telegram delivery to prevent duplicate messages. If Telegram fails during delivery, that one announcement can be missed. This is an at-most-once safeguard, not a guarantee of delivery.
+
+## Release 0.2.2 (updates on top of Beerlogger01 0.2.1)
+
+Beerlogger01/main already published version 0.2.1. This post-merge QA release uses version **0.2.2** so that Home Assistant will detect and offer the updated GHCR image, rather than reusing the same add-on version tag. The release retains the multi-account roster and relative strength features, contains the fixed nickname picker (only unbound tags, stale callback protection), safer Telegram UI formatting, and regression tests for promotion coverage and highest CoC leadership role among multiple verified alts. Build and deploy require merging this branch's changes into **Beerlogger01/main**; merging only the staging repository does not publish the production image.
