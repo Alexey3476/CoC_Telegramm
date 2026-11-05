@@ -304,16 +304,47 @@ def lineup_message(data: dict, stage: str = "main", page: int = 0) -> str:
 
 def format_cwl_message(data: dict) -> str:
     rounds = data.get("rounds") or []
+    board = data.get("standings") or {}
     if data.get("state") == "notInWar" and not rounds:
-        return "🏆 <b>Лига клановых войн</b>\nСейчас нет доступных раундов CWL."
-    lines = ["🏆 <b>Лига клановых войн · CWL</b>",
-             f"Раундов в группе: {data.get('scheduledRounds', '?')}",
-             f"Доступно наших войн: {data.get('observedRounds', 0)}",
-             f"✅ {data.get('wins', 0)} побед · 🤝 {data.get('draws', 0)} ничьих · ❌ {data.get('losses', 0)} поражений",
-             ""]
-    results = {"win": "✅ Победа", "draw": "🤝 Ничья", "loss": "❌ Поражение", "pending": "⏳ Не завершена"}
-    for index, war in enumerate(rounds[-10:], start=max(1, len(rounds) - 9)):
-        lines.append(f"<b>{index}. {html.escape(str(war.get('enemy') or '?'))}</b> · {results.get(war.get('result'), '⏳')}")
-        lines.append(f"⭐ {war.get('stars', 0)} : {war.get('enemyStars', 0)} · {game_time(war.get('startTime'))}")
-    lines.append("\nℹ️ Результаты наблюдаемых войн, не официальная таблица мест CWL.")
+        return "🏆 <b>Лига клановых войн</b>\nСейчас нет доступных раундов ЛВК."
+    count = board.get("scheduledRounds") or data.get("scheduledRounds") or len(rounds)
+    lines = [
+        "🏆 <b>Лига клановых войн</b>",
+        f"⚔️ Раундов: {count} · наблюдается: {data.get('observedRounds',0)}",
+        f"✅ {data.get('wins',0)} побед · 🤝 {data.get('draws',0)} ничьих · ❌ {data.get('losses',0)} поражений",
+        "",
+        "<b>Наши раунды</b>",
+    ]
+    results = {"win": "✅ Победа", "draw": "🤝 Ничья",
+               "loss": "❌ Поражение", "pending": "⏳ Идёт",
+               "upcoming": "🔜 Впереди"}
+    for index, war in enumerate(rounds[:7] if count == 7 else rounds, 1):
+        name = html.escape(str(war.get("enemy") or "?")[:33])
+        status = results.get(war.get("result"), "⏳ Неизвестно")
+        line = f"{war.get('round',index)}. {name} · {status}"
+        if war.get("stars") is not None and war.get("enemyStars") is not None:
+            line += f" · ⭐{war['stars']}:{war['enemyStars']}"
+        lines.append(line)
+    teams = board.get("clans") or []
+    if teams:
+        lines += ["", "<b>🏅 Таблица группы ЛВК</b>"]
+        my_place = board.get("myPlace")
+        if my_place is not None:
+            label = "Итоговое" if board.get("seasonCompleted") else "Промежуточное"
+            tie = " (делим позицию)" if board.get("myPlaceTied") else ""
+            lines.append(f"{label} место: <b>{my_place} из {len(teams)}</b>{tie}")
+        for team in teams[:8]:
+            marker = " ◀️" if team.get("tag") == data.get("clanTag") else ""
+            name = html.escape(str(team.get("name") or team.get("tag") or "?")[:27])
+            tied = "=" if team.get("placeTied") else ""
+            lines.append(f"{team.get('place','?')}{tied}. {name} · "
+                         f"⭐{team.get('stars',0)} (+{team.get('winBonusStars',0)}) "
+                         f"· 💥{float(team.get('destruction') or 0):.1f}%{marker}")
+        if not board.get("fullyObserved"):
+            lines.append(f"⚠️ API вернул {board.get('observedWars',0)} из "
+                         f"{board.get('expectedWars',0)} матчей; место предварительное.")
+        elif not board.get("seasonCompleted"):
+            lines.append("ℹ️ В таблице только завершённые матчи, +10⭐ за каждую победу.")
+    else:
+        lines.append("\nТаблица мест пока недоступна: данных API недостаточно.")
     return "\n".join(lines)[:4000]
