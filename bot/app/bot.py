@@ -27,7 +27,7 @@ from app.bindings_storage import Binding, BindingsStorage
 from app.settings import env_snapshot, settings, settings_snapshot, validate_settings
 from app.ui import format_war_message, format_raid_message, format_cwl_message
 from app.selection_ui import lineup_message, lineup_keyboard
-from app.selection import build_selection, policy_from_settings
+from app.selection import build_selection, policy_from_settings, reported_last_seen
 from app.tags import assign_game_tag, sync_tags_daily
 from app.binding_ui import sorted_roster, roster_keyboard
 from app.accounts_ui import accounts_text, accounts_keyboard, delete_confirmation
@@ -296,7 +296,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/cwlopt in|out — заявка на ЛВК для основного\n"
         "/unbind #ТЕГ — удалить свою привязку\n"
         "/unlink #ТЕГ — удалить чужую привязку (руководство)\n"
-        "/lastseen #ТЕГ YYYY-MM-DD HH:MM — ручная отметка (руководство)\n"
+        "/lastseen #ТЕГ 2d — ручная отметка по экрану игры (руководство)\n"
         "/grouplink — получить приглашение\n"
         "/unbind — отвязать аккаунт\n"
         "/chatid — ID группы (для администратора)\n\n"
@@ -945,16 +945,12 @@ async def manual_last_seen(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     try:
         tag = normalize_tag(args[0])
-        if args[1].lower() == "clear" and len(args) == 2:
-            observed = None
-        else:
-            stamp = datetime.strptime(" ".join(args[1:]), "%Y-%m-%d %H:%M")
-            observed_date = stamp.replace(tzinfo=ZoneInfo("Europe/Berlin"))
-            if observed_date.astimezone(timezone.utc) > datetime.now(timezone.utc):
-                raise ValueError("Cannot record a future login")
-            observed = observed_date.astimezone(timezone.utc).isoformat()
+        observed = reported_last_seen(" ".join(args[1:]))
     except (ValueError, InvalidTagError):
-        await update.message.reply_text("Неверный формат или дата в будущем.")
+        await update.message.reply_text(
+            "Неверная дата. Варианты: /lastseen #ТЕГ 2d, /lastseen #ТЕГ 48h, "
+            "/lastseen #ТЕГ YYYY-MM-DD HH:MM, /lastseen #ТЕГ clear"
+        )
         return
     storage: BindingsStorage = context.application.bot_data["storage"]
     saved = storage.set_manual_last_seen(settings.clan_group_id or 0, tag, observed)

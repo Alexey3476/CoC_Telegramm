@@ -7,7 +7,9 @@ observed changes is NOT evidence of two days offline.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+import re
 from typing import Any
 
 from app.bindings_storage import Binding, BindingsStorage
@@ -229,3 +231,26 @@ def build_selection(
         "Бонусы CWL оцениваются только по сохранённым CWL войнам; API не показывает реальное распределение бонусов.",
     ]
     return result
+
+
+def reported_last_seen(value: str, now: datetime | None = None) -> str | None:
+    """Convert captain's last-online observation to a UTC ISO timestamp."""
+    value = value.strip().lower()
+    if value == "clear":
+        return None
+    now = now or datetime.now(timezone.utc)
+    relative = re.fullmatch(r"([1-9]\d{0,2})([dh])", value)
+    if relative:
+        count, unit = int(relative[1]), relative[2]
+        hours = count * 24 if unit == "d" else count
+        if hours > 31 * 24:
+            raise ValueError("Last seen observation older than 31 days")
+        return (now - timedelta(hours=hours)).isoformat()
+    try:
+        local = datetime.strptime(value, "%Y-%m-%d %H:%M").replace(tzinfo=ZoneInfo("Europe/Berlin"))
+    except ValueError as exc:
+        raise ValueError("Use 2d / 48h / YYYY-MM-DD HH:MM / clear") from exc
+    observed = local.astimezone(timezone.utc)
+    if observed > now:
+        raise ValueError("Cannot record a future time")
+    return observed.isoformat()

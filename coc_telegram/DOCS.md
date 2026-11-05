@@ -48,3 +48,5 @@ Daily public player-profile snapshots are saved in `/data/player_progress.db` wi
 - One account per verified Telegram owner in the main roster by default; extra accounts are visible as twinks.
 - Kicks, promotions and CWL bonus awards are captain review suggestions only; nothing is applied automatically.
 - /unlink and /lastseen require current verified leader/co-leader rights. Users can unlink only their own account.
+
+Manual last seen (captains only): /lastseen #TAG 2d, /lastseen #TAG 48h or /lastseen #TAG YYYY-MM-DD HH:MM (Berlin time). /lastseen #TAG clear clears the observation. This records what you saw in the game, NOT what the official API reports. Please reconfirm CWL signup each new league season.

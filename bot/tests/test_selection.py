@@ -107,3 +107,16 @@ def test_promotion_skips_already_senior_captain(tmp_path):
     d = build_selection({"recommendedLineup": [player], "recommendedSize": 1},
                         db, -100, "war", SelectionPolicy(), NOW)
     assert not d["categories"]["promotionCandidates"]
+
+
+
+def test_relative_last_seen_and_refuse_future():
+    from app.selection import reported_last_seen
+    assert reported_last_seen("2d", NOW) == (NOW - timedelta(days=2)).isoformat()
+    assert reported_last_seen("48h", NOW) == (NOW - timedelta(hours=48)).isoformat()
+    assert reported_last_seen("clear", NOW) is None
+    try:
+        reported_last_seen("2026-11-10 12:00", NOW)
+        assert False
+    except ValueError:
+        pass
