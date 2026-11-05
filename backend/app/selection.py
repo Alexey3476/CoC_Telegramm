@@ -19,7 +19,7 @@ DEFAULT_WEIGHTS = {
 }
 MODE_WEIGHTS = {
     "war": {"strength": 20.0, "discipline": 35.0, "quality": 35.0, "role": 10.0},
-    "cwl": {"strength": 20.0, "discipline": 35.0, "quality": 40.0, "role": 5.0},
+    "cwl": {"strength": 45.0, "discipline": 20.0, "quality": 25.0, "role": 10.0},
 }
 ROLE_SCORE = {"leader": 100.0, "coLeader": 85.0, "admin": 65.0, "member": 50.0}
 PREFS = ("in", "out", "unknown")
@@ -61,6 +61,23 @@ class SelectionStore:
             for mode, values in MODE_WEIGHTS.items():
                 conn.executemany("INSERT OR IGNORE INTO mode_weights VALUES(?,?,?)",
                                  [(mode, metric, value) for metric, value in values.items()])
+            # One-time migration of untouched 0.2.1 defaults. Preserve any
+            # custom policy set by leaders, even if the new defaults differ.
+            conn.execute("""CREATE TABLE IF NOT EXISTS selection_migrations (
+                name TEXT PRIMARY KEY
+            )""")
+            marker = "cwl_th_focused_022"
+            if conn.execute("SELECT 1 FROM selection_migrations WHERE name=?", (marker,)).fetchone() is None:
+                old_defaults = {"strength":20.0,"discipline":35.0,"quality":40.0,"role":5.0}
+                stored = dict(conn.execute(
+                    "SELECT metric,value FROM mode_weights WHERE mode='cwl'").fetchall())
+                if set(stored) == set(old_defaults) and all(
+                    abs(stored[k] - v) < 0.00001 for k,v in old_defaults.items()
+                ):
+                    conn.executemany("UPDATE mode_weights SET value=? WHERE mode='cwl' AND metric=?",
+                                     [(v,k) for k,v in MODE_WEIGHTS["cwl"].items()])
+                conn.execute("INSERT INTO selection_migrations(name) VALUES(?)", (marker,))
+
 
     def weights(self, mode: str | None = None) -> dict[str, float]:
         with sqlite3.connect(self.path, timeout=10) as conn:
@@ -159,7 +176,8 @@ def score_and_categorize(
         war_history = p.get("history") or {}
         record = war_history if mode == "war" else (p.get("cwlHistory") or {})
         count = int(record.get("wars") or 0)
-        strength = strength_data.get(tag, {"relativeStrength": 50., "strengthCoverage": 0,
+        strength = strength_data.get(tag, {"relativeStrength": 50.,
+                                           "absoluteStrength": 50., "strengthCoverage": 0,
                                            "townHallPeers": 1})
         attendance = record.get("reliabilityPct")
         if attendance is None and record.get("attacksPossible"):
@@ -172,7 +190,8 @@ def score_and_categorize(
             return round((min(100., max(0., float(value))) * count + 50 * 3)
                          / (count + 3), 1) if value is not None else 50.0
         components = {
-            "strength": strength["relativeStrength"],
+            "strength": (strength["absoluteStrength"] if mode == "cwl"
+                         else strength["relativeStrength"]),
             "discipline": cautious(attendance),
             "quality": cautious(quality),
             "role": ROLE_SCORE.get(p.get("role"), 50.0),
@@ -204,6 +223,8 @@ def score_and_categorize(
         p.update({
             "selectionScore": score, "scoreWeights": dict(weights),
             "scoreComponents": components, "relativeStrength": strength["relativeStrength"],
+            "absoluteStrength": strength["absoluteStrength"],
+            "strengthMethod": "absolute TH + quality" if mode == "cwl" else "same-TH peers",
             "strengthCoverage": strength["strengthCoverage"],
             "townHallPeers": strength["townHallPeers"],
             "confidence": "high" if count >= 5 and strength["strengthCoverage"] > 0 else
