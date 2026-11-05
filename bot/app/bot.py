@@ -30,6 +30,7 @@ from app.ui import format_war_message, format_raid_message, lineup_message, line
 from app.tags import assign_game_tag, sync_tags_daily
 from app.binding_ui import sorted_roster, roster_keyboard, available_roster
 from app.captain import is_captain, captain_report_text
+from app.players_ui import roster_page, roster_keyboard as players_roster_keyboard, donation_text, hall_text, back_to_roster
 from app.profile_ui import (profile_text, profile_keyboard, detail_text, detail_keyboard,
                             delete_keyboard, progress_text, progress_keyboard)
 from app.war_results import WarAnnouncementStore, classify_result, format_result, recently_finished, war_identity
@@ -264,6 +265,8 @@ def main_menu_keyboard(user_id: int | None = None, captain: bool = False) -> Inl
          InlineKeyboardButton("🏆 Лига CWL", callback_data="menu_cwl")],
         [InlineKeyboardButton("🏛️ Столица", callback_data="menu_raids"),
          InlineKeyboardButton("🏰 Клан", callback_data="menu_clan")],
+        [InlineKeyboardButton("🎁 Донат", callback_data="menu_donate"),
+         InlineKeyboardButton("🏆 Зал славы", callback_data="menu_hall")],
         [InlineKeyboardButton("👤 Профиль", callback_data="menu_profile"),
          InlineKeyboardButton("👥 Аккаунты", callback_data="menu_accounts")],
         [InlineKeyboardButton("📈 Развитие", callback_data="menu_progress"),
@@ -285,6 +288,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/menu — главное меню с кнопками\n"
         "/war — текущая война и атаки\n"
         "/nextwar — подбор состава и история\n"
+        "/donate — пожертвования сезона\n"
+        "/hall — зал славы клана\n"
         "/cwl — результаты ЛВК\n"
         "/progress — развитие моего аккаунта\n"
         "/captain — отчёт для руководства клана\n"
@@ -316,6 +321,8 @@ async def sync_bot_commands(bot) -> None:
             BotCommand("cwl", "🏆 Лига CWL"),
             BotCommand("progress", "📈 Прогресс игрока"),
             BotCommand("staff", "🛡️ Управление кланом"),
+            BotCommand("donate", "🎁 Донат сезона"),
+            BotCommand("hall", "🏆 Зал славы"),
             BotCommand("profile", "👤 Мой профиль"),
             BotCommand("clan", "🏰 Информация о клане"),
             BotCommand("help", "❓ Помощь")]
@@ -1196,6 +1203,8 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     handlers = {
         "menu_home": menu,
         "menu_topplayers": top_players,
+        "menu_donate": donations,
+        "menu_hall": hall_of_fame,
         "menu_clan": clan,
         "menu_raids": clan_raids,
         "menu_games": clan_games,
@@ -1685,26 +1694,84 @@ def format_top_players(payload: dict[str, Any]) -> str:
 
 
 async def top_players(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Display API-backed donor/war-attack rankings safely."""
-    if not update.message and not update.callback_query:
+    """Show every clan member and allow opening API-backed player profiles."""
+    if not update.effective_user:
         return
     try:
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
-            payload = await fetch_json(client, "/activity")
-        await send_or_edit_message(
-            update, format_top_players(payload), parse_mode=ParseMode.HTML,
+            clan_data = await fetch_json(client, "/clan")
+        roster = sorted(
+            [m for m in clan_data.get("memberList") or [] if m.get("tag")],
+            key=lambda m: (str(m.get("name") or "").casefold(), str(m.get("tag"))),
         )
-    except httpx.HTTPStatusError as exc:
-        logger.warning("Player activity API status=%s", exc.response.status_code)
+        context.user_data["clan_player_roster"] = roster
         await send_or_edit_message(
-            update, "Не удалось получить рейтинг игроков. Попробуй позже.",
-            parse_mode=None,
+            update, roster_page(roster), parse_mode=ParseMode.HTML,
+            reply_markup=players_roster_keyboard(roster),
         )
-    except httpx.RequestError:
-        logger.warning("Player activity backend unavailable")
-        await send_or_edit_message(
-            update, "Сервер статистики временно недоступен.", parse_mode=None,
-        )
+    except (httpx.HTTPStatusError, httpx.RequestError):
+        logger.warning("Could not load member directory")
+        await send_or_edit_message(update, "Список игроков пока недоступен.")
+
+
+async def donations(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    roster = context.user_data.get("clan_player_roster")
+    if roster is None:
+        try:
+            async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+                clan_data = await fetch_json(client, "/clan")
+            roster = clan_data.get("memberList") or []
+            context.user_data["clan_player_roster"] = roster
+        except (httpx.HTTPStatusError, httpx.RequestError):
+            await send_or_edit_message(update, "Не удалось получить текущий донат.")
+            return
+    await send_or_edit_message(update, donation_text(roster), parse_mode=ParseMode.HTML,
+                               reply_markup=back_to_roster())
+
+
+async def hall_of_fame(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+            payload = await fetch_json(client, "/hall")
+        await send_or_edit_message(update, hall_text(payload), parse_mode=ParseMode.HTML,
+                                   reply_markup=back_to_roster())
+    except (httpx.HTTPStatusError, httpx.RequestError):
+        await send_or_edit_message(update, "Зал славы пока недоступен: данные не получены.")
+
+
+async def players_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.callback_query:
+        return
+    await update.callback_query.answer()
+    _, action, raw_index = (update.callback_query.data or "").split(":")
+    if action == "donate":
+        await donations(update, context)
+        return
+    if action == "hall":
+        await hall_of_fame(update, context)
+        return
+    roster = context.user_data.get("clan_player_roster")
+    if roster is None:
+        await top_players(update, context)
+        return
+    index = int(raw_index)
+    if action == "page":
+        await send_or_edit_message(update, roster_page(roster, index),
+                                   parse_mode=ParseMode.HTML,
+                                   reply_markup=players_roster_keyboard(roster, index))
+        return
+    if action != "view" or not 0 <= index < len(roster):
+        return
+    tag = roster[index]["tag"]
+    try:
+        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+            profile_data = await fetch_json(client, f"/player/{encode_tag(tag)}")
+        league = profile_data.get("leagueTier") or profile_data.get("league") or {}
+        profile_data["leagueName"] = league.get("name") if isinstance(league, dict) else None
+        await send_or_edit_message(update, detail_text(profile_data), parse_mode=ParseMode.HTML,
+                                   reply_markup=back_to_roster(index // 8))
+    except (httpx.HTTPStatusError, httpx.RequestError):
+        await send_or_edit_message(update, "Не удалось загрузить профиль игрока.")
 
 
 async def clan_raids(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2043,6 +2110,8 @@ async def main() -> None:
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("clan", clan))
     application.add_handler(CommandHandler("topplayers", top_players))
+    application.add_handler(CommandHandler("donate", donations))
+    application.add_handler(CommandHandler("hall", hall_of_fame))
     application.add_handler(CommandHandler("player", player))
     application.add_handler(CommandHandler("war", war))
     application.add_handler(CommandHandler("nextwar", next_war_analysis))
@@ -2071,6 +2140,7 @@ async def main() -> None:
     application.add_handler(CallbackQueryHandler(bind_cancel, pattern="^bind_cancel$"))
     application.add_handler(CallbackQueryHandler(roster_callback, pattern=r"^pick:(manual|page|player):[0-9]+$"))
     application.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
+    application.add_handler(CallbackQueryHandler(players_callback, pattern=r"^players:(view|page|hall|donate):[0-9]+$"))
     application.add_handler(CallbackQueryHandler(account_callback, pattern=r"^acct:(list|view|primary|delete|confirm|progress):[0-9]+$"))
     application.add_handler(CallbackQueryHandler(growth_callback, pattern=r"^growth:days:(0|7|30)$"))
     application.add_handler(CallbackQueryHandler(staff_callback, pattern=r"^staff:(promotion|kick|bonus)$"))
