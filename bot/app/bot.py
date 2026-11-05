@@ -21,6 +21,7 @@ from telegram.ext import (
     filters,
 )
 from telegram.helpers import escape_markdown
+from telegram.error import BadRequest
 
 from app.backend_client import build_url, fetch_json
 from app.bindings_storage import Binding, BindingsStorage
@@ -113,7 +114,7 @@ def format_activity_report(payload: dict[str, Any]) -> str:
     most_active = activity.get("mostActive", [])
     least_active = activity.get("leastActive", [])
     
-    msg = f"📊 *Отчет об активности клана {clan_name}*\n\n"
+    msg = f"📊 *Отчет об активности клана {safe_markdown(clan_name)}*\n\n"
     msg += f"🏆 *Уровень клана:* {clan_level}\n"
     msg += f"👥 *Участников:* {total}\n"
     msg += f"⚔️ *Среднее трофеев:* {avg_trophies}\n\n"
@@ -138,13 +139,13 @@ def format_activity_report(payload: dict[str, Any]) -> str:
     for player in most_active[:5]:
         name = player.get("name", "Unknown")
         role = translate_role(player.get("role", "member"))
-        msg += f"  • {name} ({role})\n"
+        msg += f"  • {safe_markdown(name)} ({safe_markdown(role)})\n"
     
     msg += "\n📉 *Меньше всего пожертвований:*\n"
     for player in least_active[:5]:
         name = player.get("name", "Unknown")
         role = translate_role(player.get("role", "member"))
-        msg += f"  • {name} ({role})\n"
+        msg += f"  • {safe_markdown(name)} ({safe_markdown(role)})\n"
     
     return msg
 
@@ -334,15 +335,28 @@ async def sync_bot_commands(bot) -> None:
     )
 
 
-async def send_or_edit_message(update: Update, text: str, parse_mode: str = ParseMode.MARKDOWN, reply_markup = None):
-    """Send message for regular command or edit for callback query."""
+async def send_or_edit_message(
+    update: Update, text: str, parse_mode: str | None = ParseMode.MARKDOWN,
+    reply_markup=None,
+):
+    """Send or update a message. Bad user-generated markup must not break navigation."""
+    if update.callback_query and reply_markup is None:
+        reply_markup = back_keyboard()
     if update.message:
-        return await update.message.reply_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+        sender = update.message.reply_text
     elif update.callback_query:
-        if reply_markup is None:
-            reply_markup = back_keyboard()
-        return await update.callback_query.edit_message_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
-    return None
+        sender = update.callback_query.edit_message_text
+    else:
+        return None
+    try:
+        return await sender(text, parse_mode=parse_mode, reply_markup=reply_markup)
+    except BadRequest as exc:
+        # Telegram may reject a name containing unescaped Markdown or HTML.
+        # Never mask unrelated Telegram errors such as permissions or invalid chat IDs.
+        if parse_mode is None or "can't parse entities" not in str(exc).lower():
+            raise
+        logger.warning("Telegram rejected text formatting; retrying without entities")
+        return await sender(text, parse_mode=None, reply_markup=reply_markup)
 
 
 
@@ -1479,51 +1493,53 @@ async def war_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         storage.set_cooldowns(group_id, reminded_user_ids, now)
 
 
+def format_top_players(payload: dict[str, Any]) -> str:
+    """Safe HTML rendering; activity metrics are not a last-online timestamp."""
+    lines = [
+        "👥 <b>Активность участников клана</b>",
+        "<i>Пожертвования и атаки, не время последнего входа.</i>",
+    ]
+    for title, key in (
+        ("🏆 <b>Лидеры по активности</b>", "mostActive"),
+        ("📉 <b>Меньше всего доната / атак</b>", "leastActive"),
+    ):
+        lines.extend(("", title))
+        members = (payload.get(key) or [])[:10]
+        if not members:
+            lines.append("Данных пока нет.")
+        for index, player in enumerate(members, 1):
+            name = html.escape(str(player.get("name") or "Игрок"))
+            th = html.escape(str(player.get("townHallLevel") or "?"))
+            donations = html.escape(str(player.get("donations") or 0))
+            attacks = html.escape(str(player.get("warAttacks") or 0))
+            lines.append(
+                f"{index}. <b>{name}</b> · TH{th}\n"
+                f"    💰 {donations} доната · ⚔️ {attacks} атак"
+            )
+    return "\n".join(lines)[:4000]
+
+
 async def top_players(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show most and least active clan members."""
+    """Display API-backed donor/war-attack rankings safely."""
     if not update.message and not update.callback_query:
         return
-    async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
-        try:
+    try:
+        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
             payload = await fetch_json(client, "/activity")
-            
-            most_active = payload.get("mostActive", [])
-            least_active = payload.get("leastActive", [])
-            
-            msg = "🏆 *Активность клана*\n\n"
-            
-            # Most active
-            msg += "⭐ *Больше всего доната / атак (не время онлайн):*\n"
-            for i, player in enumerate(most_active, 1):
-                name = player.get("name", "Unknown")
-                donations = player.get("donations", 0)
-                attacks = player.get("warAttacks", 0)
-                th = player.get("townHallLevel", "?")
-                msg += f"{i}. {name} (TH{th})\n"
-                msg += f"   💰 {donations} доната | ⚔️ {attacks} атак\n"
-            
-            msg += "\n"
-            
-            # Least active
-            msg += "📉 *Меньше всего доната / атак (не время онлайн):*\n"
-            for i, player in enumerate(least_active, 1):
-                name = player.get("name", "Unknown")
-                donations = player.get("donations", 0)
-                attacks = player.get("warAttacks", 0)
-                th = player.get("townHallLevel", "?")
-                msg += f"{i}. {name} (TH{th})\n"
-                msg += f"   💰 {donations} доната | ⚔️ {attacks} атак\n"
-            
-            await send_or_edit_message(update, msg)
-        except httpx.HTTPStatusError as exc:
-            logger.warning("Backend error: %s", exc)
-            await send_or_edit_message(update, "Failed to fetch player activity. Try again later.")
-        except httpx.RequestError as exc:
-            logger.warning("Backend unreachable: %s", exc)
-            await send_or_edit_message(update, "Backend is unreachable.")
-        except Exception:  # noqa: BLE001
-            logger.exception("Unhandled error in /top-players")
-            await send_or_edit_message(update, "Unexpected error occurred.")
+        await send_or_edit_message(
+            update, format_top_players(payload), parse_mode=ParseMode.HTML,
+        )
+    except httpx.HTTPStatusError as exc:
+        logger.warning("Player activity API status=%s", exc.response.status_code)
+        await send_or_edit_message(
+            update, "Не удалось получить рейтинг игроков. Попробуй позже.",
+            parse_mode=None,
+        )
+    except httpx.RequestError:
+        logger.warning("Player activity backend unavailable")
+        await send_or_edit_message(
+            update, "Сервер статистики временно недоступен.", parse_mode=None,
+        )
 
 
 async def clan_raids(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
