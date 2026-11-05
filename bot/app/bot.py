@@ -28,6 +28,7 @@ from app.settings import env_snapshot, settings, settings_snapshot, validate_set
 from app.ui import format_war_message, format_raid_message, lineup_message, lineup_keyboard, format_cwl_message
 from app.tags import assign_game_tag, sync_tags_daily
 from app.binding_ui import sorted_roster, roster_keyboard
+from app.captain import is_captain, captain_report_text
 
 log_level = logging.DEBUG if settings.debug else logging.INFO
 logging.basicConfig(level=log_level, format="%(levelname)s %(name)s %(message)s")
@@ -250,9 +251,9 @@ def bind_cancel_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def main_menu_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
+def main_menu_keyboard(user_id: int | None = None, captain: bool = False) -> InlineKeyboardMarkup:
     """One entry point to the full bot; short labels fit on phones."""
-    return InlineKeyboardMarkup([
+    rows = [
         [InlineKeyboardButton("⚔️ Война", callback_data="menu_war"),
          InlineKeyboardButton("📋 Следующий состав", callback_data="menu_nextwar")],
         [InlineKeyboardButton("👥 Игроки", callback_data="menu_topplayers"),
@@ -263,7 +264,10 @@ def main_menu_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
          InlineKeyboardButton("🔐 Привязка", callback_data="bind_start")],
         [InlineKeyboardButton("📈 Развитие", callback_data="menu_progress"),
          InlineKeyboardButton("❓ Справка", callback_data="menu_help")],
-    ])
+    ]
+    if captain:
+        rows.append([InlineKeyboardButton("📋 Капитанский отчёт", callback_data="menu_captain")])
+    return InlineKeyboardMarkup(rows)
 
 
 def back_keyboard() -> InlineKeyboardMarkup:
@@ -278,6 +282,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/nextwar — подбор состава и история\n"
         "/cwl — результаты ЛВК\n"
         "/progress — развитие моего аккаунта\n"
+        "/captain — отчёт для руководства клана\n"
         "/clan — данные клана\n"
         "/topplayers — рейтинг активности\n"
         "/raids — рейды столицы\n"
@@ -381,6 +386,34 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error("Failed to handle /start: %s", e, exc_info=settings.debug)
 
 
+async def has_captain_access(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Revalidate role on every privileged action, not just when rendering buttons."""
+    if not ensure_private_chat(update) or not update.effective_user:
+        return False
+    storage: BindingsStorage = context.application.bot_data["storage"]
+    binding = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
+    if not binding:
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+            clan_data = await fetch_json(client, "/clan")
+        return is_captain(clan_data.get("memberList") or [], binding.coc_player_tag)
+    except (httpx.RequestError, httpx.HTTPStatusError):
+        return False
+
+
+async def captain_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await has_captain_access(update, context):
+        await send_or_edit_message(update, "Этот раздел доступен только лидеру или соруководителю клана.")
+        return
+    try:
+        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+            data = await fetch_json(client, "/activity-report")
+        await send_or_edit_message(update, captain_report_text(data), parse_mode=ParseMode.HTML)
+    except (httpx.RequestError, httpx.HTTPStatusError):
+        await send_or_edit_message(update, "Не удалось собрать отчёт.")
+
+
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show a single navigable dashboard in private chats and groups."""
     if not update.effective_user:
@@ -390,7 +423,9 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     who = html.escape(binding.coc_player_tag) if binding else "не привязан"
     name = html.escape(settings.coc_clan_tag or "Troublemakers")
     text = f"🏰 <b>Штаб клана</b>\n{name}\n\n👤 Мой аккаунт: <code>{who}</code>\nВыбери раздел:"
-    await send_or_edit_message(update, text, parse_mode=ParseMode.HTML, reply_markup=main_menu_keyboard())
+    captain = await has_captain_access(update, context) if binding else False
+    await send_or_edit_message(update, text, parse_mode=ParseMode.HTML,
+                               reply_markup=main_menu_keyboard(captain=captain))
 
 
 async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -810,6 +845,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "menu_nextwar": next_war_analysis,
         "menu_cwl": cwl,
         "menu_progress": progress,
+        "menu_captain": captain_report,
         "menu_player": player,
         "menu_profile": player,
         "menu_help": help_command,
@@ -1594,6 +1630,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("nextwar", next_war_analysis))
     application.add_handler(CommandHandler("cwl", cwl))
     application.add_handler(CommandHandler("progress", progress))
+    application.add_handler(CommandHandler("captain", captain_report))
     application.add_handler(CommandHandler("raids", clan_raids))
     application.add_handler(CommandHandler("games", clan_games))
     application.add_handler(CommandHandler("ping", ping))
