@@ -106,18 +106,32 @@ def promotion_score(player: dict, donation_max: int, raid_max: int) -> dict:
     Ignore entirely missing metrics and show coverage. Never pretend the public
     API exposes per-player Clan Games points.
     """
-    hist = player.get("history") or {}
-    quality = hist.get("qualityPct")
-    if quality is None and hist.get("averageWeightedStars") is not None:
-        quality = min(100., float(hist["averageWeightedStars"]) / 3 * 100)
-    participation = hist.get("reliabilityPct")
+    # Consistent measurement period: use observed completed attacks from both
+    # regular war and CWL. These remain separate for mode-specific lineup scores.
+    regular = player.get("history") or {}
+    cwl = player.get("cwlHistory") or {}
+    observed_wars = int(regular.get("wars") or 0) + int(cwl.get("wars") or 0)
+    observed_used = int(regular.get("attacksUsed") or 0) + int(cwl.get("attacksUsed") or 0)
+    observed_possible = int(regular.get("attacksPossible") or 0) + int(cwl.get("attacksPossible") or 0)
+    parts = []
+    for group in (regular, cwl):
+        used = int(group.get("attacksUsed") or 0)
+        quality = group.get("qualityPct")
+        if quality is None and group.get("averageWeightedStars") is not None:
+            quality = min(100., float(group["averageWeightedStars"]) / 3 * 100)
+        if used and quality is not None:
+            parts.append((used, float(quality)))
+    quality = (sum(used * value for used, value in parts) / sum(used for used, _ in parts)
+               if parts and observed_wars >= 3 else None)
+    participation = (100 * observed_used / observed_possible
+                     if observed_possible and observed_wars >= 3 else None)
     donations = player.get("donations")
     raids = player.get("raidLoot")
     components = {
-        "war": (40, quality if hist.get("wars", 0) >= 3 else None),
+        "war": (40, quality),
         "donations": (25, min(100., 100 * donations / donation_max) if donations is not None and donation_max > 0 else None),
         "raids": (20, min(100., 100 * raids / raid_max) if raids is not None and raid_max > 0 else None),
-        "discipline": (15, participation if hist.get("wars", 0) >= 3 else None),
+        "discipline": (15, participation),
     }
     known = [(w, float(v)) for w, v in components.values() if v is not None]
     return {
@@ -126,4 +140,6 @@ def promotion_score(player: dict, donation_max: int, raid_max: int) -> dict:
         "donationSeason": donations,
         "latestRaidLoot": raids,
         "clanGames": None,
+        "warQuality": round(quality, 1) if quality is not None else None,
+        "observedWars": observed_wars,
     }

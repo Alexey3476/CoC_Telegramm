@@ -224,7 +224,7 @@ def score_and_categorize(
               int(war_history.get("wars") or 0) >= 4):
             groups["kick"].append(p)
         if (p.get("role") not in {"coLeader","leader"} and
-            int(war_history.get("wars") or 0) >= 3 and
+            (int(war_history.get("wars") or 0) + int((p.get("cwlHistory") or {}).get("wars") or 0)) >= 3 and
             promotion["score"] is not None and promotion["score"] >= 75 and
             promotion["coverage"] >= 50 and available != "inactive" and streak == 0):
             groups["promotion"].append(p)

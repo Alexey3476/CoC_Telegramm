@@ -10,6 +10,7 @@ def hall_of_fame(clan: dict, wars: list[dict], raid: dict | None = None) -> dict
     regular = [w for w in wars if w.get("_warKind") == "war" or
                (not w.get("_warKind") and w.get("attacksPerMember") == 2)]
     history = summarize_wars(regular, clan_tag)
+    cwl_history = summarize_wars([w for w in wars if w.get("_warKind") == "cwl"], clan_tag)
     members = clan.get("memberList") or []
     raid_members = (raid or {}).get("members") or []
     raids = {m["tag"]: int(m.get("capitalResourcesLooted") or 0)
@@ -23,10 +24,14 @@ def hall_of_fame(clan: dict, wars: list[dict], raid: dict | None = None) -> dict
     for member in members:
         tag = member.get("tag")
         stats = history.get(tag) or {}
-        if stats.get("wars",0) >= 3 and stats.get("qualityPct") is not None:
-            war_ranks.append({"name":member.get("name"), "tag":tag,
-                              "score":stats["qualityPct"],"wars":stats["wars"]})
-        payload = {**member,"raidLoot":raids.get(tag),"history":stats}
+        cwl_stats = cwl_history.get(tag) or {}
+        combined = {**member,"history":stats,"cwlHistory":cwl_stats}
+        merit = promotion_score({**combined,"raidLoot":raids.get(tag)},donation_max,raid_max)
+        total_wars = int(stats.get("wars") or 0) + int(cwl_stats.get("wars") or 0)
+        if total_wars >= 3 and merit["warQuality"] is not None:
+            war_ranks.append({"name":member.get("name"),"tag":tag,
+                              "score":merit["warQuality"],"wars":total_wars})
+        payload = {**combined,"raidLoot":raids.get(tag)}
         merit = promotion_score(payload,donation_max,raid_max)
         if (merit["score"] is not None and merit["coverage"] >= 50 and
                 member.get("role") not in {"coLeader","leader"}):
