@@ -51,3 +51,17 @@ def test_lineup_explains_missing_data_and_has_backup():
     assert "Lex" in lineup_message(data)
     assert "Other" in lineup_message(data, "bench")
     assert "55%" in lineup_message(data, "about")
+
+
+
+def test_war_shows_unspent_attacks_without_leaking_markup():
+    msg = format_war_message({
+        "state": "inWar", "teamSize": 2, "attacksPerMember": 1,
+        "clan": {"name": "Our", "stars": 3, "destructionPercentage": 50,
+                 "members": [{"name": "A&B", "attacks": []},
+                             {"name": "Lex", "attacks": [{"stars": 3}]}]},
+        "opponent": {"name": "Enemy", "stars": 1, "destructionPercentage": 20},
+    })
+    assert "A&amp;B" in msg
+    assert "Lex · 1 атак" not in msg
+    assert "осталось 1" in msg

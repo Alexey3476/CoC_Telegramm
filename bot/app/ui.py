@@ -82,6 +82,16 @@ def format_war_message(war: dict) -> str:
         if total:
             used = sum(len(m.get("attacks") or []) for m in clan.get("members", []))
             lines.append(f"🎯 Наши атаки: {used}/{total} · осталось {max(0, total - used)}")
+            missing = [
+                (m.get("name") or "Игрок", max(0, attacks_per - len(m.get("attacks") or [])))
+                for m in clan.get("members", []) if len(m.get("attacks") or []) < attacks_per
+            ]
+            if missing:
+                lines.extend(["", "<b>Кому ещё атаковать:</b>"])
+                for name, left in missing[:10]:
+                    lines.append(f"• {html.escape(str(name))} · {left} атак")
+                if len(missing) > 10:
+                    lines.append(f"… и ещё {len(missing) - 10} игроков")
     if state == "preparation":
         lines.append(f"Начало: {game_time(war.get('startTime'))}")
     else:
