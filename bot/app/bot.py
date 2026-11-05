@@ -19,6 +19,7 @@ from telegram.ext import (
     ContextTypes,
     MessageHandler,
     PollAnswerHandler,
+    PollHandler,
     filters,
 )
 from telegram.helpers import escape_markdown
@@ -603,6 +604,12 @@ async def deputy_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     eligible = any(link.coc_player_tag in current_tags for link in linked)
     polls.record(answer.poll_id, owner_id, list(answer.option_ids), eligible)
+
+
+async def deputy_poll_closed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Track Telegram's manual poll closure across add-on restarts."""
+    if update.poll and update.poll.is_closed:
+        context.application.bot_data["clan_poll_store"].close(update.poll.id)
 
 
 async def deputy_results(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2423,6 +2430,7 @@ async def main() -> None:
     )
     application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, verify_new_members))
     application.add_handler(PollAnswerHandler(deputy_poll_answer))
+    application.add_handler(PollHandler(deputy_poll_closed))
     application.add_error_handler(handle_handler_exception)
 
     if settings.clan_group_id is not None:
