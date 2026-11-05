@@ -1,0 +1,27 @@
+configuration:
+  telegram_bot_token:
+    name: Telegram bot token
+  coc_token:
+    name: Clash of Clans API key
+  coc_clan_tag:
+    name: Clan tag
+  clan_group_id:
+    name: Telegram group chat ID
+  invite_ttl_minutes:
+    name: Invite link lifetime (minutes)
+  enforce_clan_membership:
+    name: Require clan membership
+  require_player_verification:
+    name: Require player token verification
+  war_reminder_enabled:
+    name: War reminders enabled
+  war_reminder_window_hours:
+    name: Remind during the last N hours
+  war_reminder_interval_minutes:
+    name: Check for missing attacks every N minutes
+  cache_ttl_seconds:
+    name: Cache lifetime (seconds)
+  request_timeout_seconds:
+    name: API timeout (seconds)
+  debug:
+    name: Debug logs

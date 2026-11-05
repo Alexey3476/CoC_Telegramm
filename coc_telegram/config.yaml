@@ -1,0 +1,41 @@
+name: Clash of Clans Telegram Bot
+version: "0.1.0"
+slug: coc_telegram
+description: Independent Clash of Clans Telegram bot with war analytics
+url: https://github.com/Alexey3476/CoC_Telegramm
+arch:
+  - aarch64
+  - amd64
+image: ghcr.io/alexey3476/coc-telegram
+startup: application
+boot: auto
+init: false
+host_network: false
+options:
+  telegram_bot_token: ""
+  coc_token: ""
+  coc_clan_tag: ""
+  clan_group_id: ""
+  invite_ttl_minutes: 10
+  enforce_clan_membership: true
+  require_player_verification: true
+  war_reminder_enabled: true
+  war_reminder_window_hours: 4
+  war_reminder_interval_minutes: 15
+  cache_ttl_seconds: 180
+  request_timeout_seconds: 20
+  debug: false
+schema:
+  telegram_bot_token: password
+  coc_token: password
+  coc_clan_tag: str
+  clan_group_id: str?
+  invite_ttl_minutes: int(1,1440)
+  enforce_clan_membership: bool
+  require_player_verification: bool
+  war_reminder_enabled: bool
+  war_reminder_window_hours: int(1,24)
+  war_reminder_interval_minutes: int(1,120)
+  cache_ttl_seconds: int(30,3600)
+  request_timeout_seconds: int(5,120)
+  debug: bool
