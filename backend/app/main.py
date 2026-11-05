@@ -46,11 +46,11 @@ async def collect_war_history(
     while True:
         try:
             regular = await get_regular_war(client, cache)
-            if history.save(regular):
+            if history.save({**regular, '_warKind': 'war'}):
                 logger.info("Saved regular clan war snapshot")
             _, cwl_wars = await get_league_wars(client, cache)
             for war in cwl_wars:
-                history.save(war)
+                history.save({**war, '_warKind': 'cwl'})
             if cwl_wars:
                 logger.info("Reviewed %s CWL wars", len(cwl_wars))
         except asyncio.CancelledError:
