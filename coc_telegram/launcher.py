@@ -31,6 +31,7 @@ def build_env(options_path: Path) -> dict[str, str]:
         "invite_ttl_minutes": "INVITE_TTL_MINUTES",
         "enforce_clan_membership": "ENFORCE_CLAN_MEMBERSHIP",
         "require_player_verification": "REQUIRE_PLAYER_VERIFICATION",
+        "war_results_enabled": "WAR_RESULTS_ENABLED",
         "war_reminder_enabled": "WAR_REMINDER_ENABLED",
         "war_reminder_window_hours": "WAR_REMINDER_WINDOW_HOURS",
         "war_reminder_interval_minutes": "WAR_REMINDER_INTERVAL_MINUTES",

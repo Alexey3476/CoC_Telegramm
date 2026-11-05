@@ -31,7 +31,7 @@ from app.coc_client import (
     encode_tag,
 )
 from app.settings import settings, validate_settings
-from app.war_history import WarHistory
+from app.war_history import WarHistory, completed_for_clan
 from app.progress import ProgressStore
 from app.selection import SelectionStore
 
@@ -182,6 +182,14 @@ async def player(tag: str, request: Request):
         raise HTTPException(status_code=504, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/war-results")
+async def war_results(request: Request):
+    """Stored, completed regular and CWL wars for one-time Telegram notifications."""
+    clan_tag = normalize_tag(settings.coc_clan_tag)
+    wars = request.app.state.history.completed(limit=50)
+    return {"wars": completed_for_clan(wars, clan_tag)}
 
 
 @app.get("/war")

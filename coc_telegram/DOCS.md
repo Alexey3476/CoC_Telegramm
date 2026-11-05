@@ -50,3 +50,12 @@ Daily public player-profile snapshots are saved in `/data/player_progress.db` wi
 - Kick candidates are leader-only review suggestions requiring missed attacks and at least seven days manually confirmed inactivity. Promotions require consistent archived performance. CWL bonuses require actual CWL history; no invented records.
 - No automatic kicks, promotions or bonuses. Missing activity/attack history is displayed as unknown, not zero. Selection weights are kept in /data/selection.db, alternate links migrate additively in /data/bindings.db.
 - Back up the Home Assistant add-on data before updating.
+
+## Automated post-war messages (0.2.1)
+
+- The add-on checks persisted completed regular wars and CWL rounds and posts a short group result: stars, destruction and one of five random Russian messages for a win, loss or draw.
+- The first successful poll silently marks existing completed wars as seen to avoid flooding the group when upgrading. Subsequent completed wars trigger one notification per group/war; status is stored in the persistent `/data/bindings.db`.
+- Only results with a verified clan tag, both star totals and any required damage tie-break can trigger a message. Ended rounds older than 12 hours are ignored.
+- Enable or disable greetings with the Home Assistant option `war_results_enabled` (enabled by default). It requires `clan_group_id`, an admin bot that may send messages, and accessible Clash API results.
+- Polling runs approximately every 3 minutes, but the backend may take up to 5 minutes to capture a completed war. The bot will not repost already seen results on restart.
+- The tracker reserves an announcement before Telegram delivery to prevent duplicate messages. If Telegram fails during delivery, that one announcement can be missed. This is an at-most-once safeguard, not a guarantee of delivery.

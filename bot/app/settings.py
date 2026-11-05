@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     enforce_clan_membership: bool = False
     require_player_verification: bool = True
     coc_clan_tag: str | None = None
+    war_results_enabled: bool = True
     war_reminder_enabled: bool = True
     war_reminder_window_hours: int = 4
     war_reminder_interval_minutes: int = 15

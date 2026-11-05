@@ -30,6 +30,7 @@ from app.ui import format_war_message, format_raid_message, lineup_message, line
 from app.tags import assign_game_tag, sync_tags_daily
 from app.binding_ui import sorted_roster, roster_keyboard
 from app.captain import is_captain, captain_report_text
+from app.war_results import WarAnnouncementStore, classify_result, format_result, recently_finished, war_identity
 
 log_level = logging.DEBUG if settings.debug else logging.INFO
 logging.basicConfig(level=log_level, format="%(levelname)s %(name)s %(message)s")
@@ -1493,6 +1494,48 @@ async def war_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         storage.set_cooldowns(group_id, reminded_user_ids, now)
 
 
+async def war_result_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Announce each observed completed war at most once to the configured group.
+
+    The first successful fetch records existing finished wars without announcing
+    them. Deduplication and startup baseline persist across Home Assistant restarts.
+    """
+    if not settings.war_results_enabled or settings.clan_group_id is None:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+            response = await fetch_json(client, "/war-results")
+    except (httpx.HTTPStatusError, httpx.RequestError):
+        logger.warning("Cannot retrieve completed war results; retrying next polling cycle")
+        return
+    wars = response.get("wars") or []
+    # Only complete, attributable results get reserved. Never announce an unknown
+    # or in-progress result, or a war involving another clan.
+    by_id: dict[str, dict[str, Any]] = {}
+    for war in reversed(wars):  # older results first
+        identity = war_identity(war)
+        if identity and classify_result(war, settings.coc_clan_tag) is not None:
+            by_id[identity] = war
+
+    store: WarAnnouncementStore = context.application.bot_data["war_outcomes"]
+    ids = store.claim_new(settings.clan_group_id, list(by_id))
+    for war_id in ids:
+        war = by_id[war_id]
+        if not recently_finished(war):
+            continue  # Don't wake the group about old archived rounds.
+        try:
+            await context.bot.send_message(
+                chat_id=settings.clan_group_id,
+                text=format_result(war, settings.coc_clan_tag),
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            # Never log a raw Telegram API exception with an embedded bot token.
+            # The ID stays reserved: better miss one message than spam on restart.
+            logger.warning("War outcome announcement failed for id=%s", war_id)
+
+
 def format_top_players(payload: dict[str, Any]) -> str:
     """Safe HTML rendering; activity metrics are not a last-online timestamp."""
     lines = [
@@ -1855,6 +1898,7 @@ async def main() -> None:
     application = ApplicationBuilder().token(settings.telegram_bot_token).request(request).build()
 
     application.bot_data["storage"] = BindingsStorage(settings.bindings_db_path)
+    application.bot_data["war_outcomes"] = WarAnnouncementStore(settings.bindings_db_path)
 
     application.add_handler(MessageHandler(filters.COMMAND, log_any_command), group=-1)
     application.add_handler(CommandHandler("start", start))
@@ -1913,6 +1957,14 @@ async def main() -> None:
             sync_tags_daily,
             time=time(hour=9, minute=0, tzinfo=ZoneInfo("Europe/Berlin")),
             name="clan-game-nickname-sync",
+        )
+
+    if settings.war_results_enabled and settings.clan_group_id is not None:
+        application.job_queue.run_repeating(
+            war_result_job,
+            interval=timedelta(minutes=3),
+            first=timedelta(minutes=2),
+            name="completed-war-congratulations",
         )
 
     if settings.war_reminder_enabled:
