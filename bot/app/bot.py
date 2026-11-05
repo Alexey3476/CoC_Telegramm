@@ -30,7 +30,9 @@ from app.ui import format_war_message, format_raid_message, lineup_message, line
 from app.tags import assign_game_tag, sync_tags_daily
 from app.binding_ui import sorted_roster, roster_keyboard, available_roster
 from app.captain import is_captain, captain_report_text
-from app.players_ui import roster_page, roster_keyboard as players_roster_keyboard, donation_text, hall_text, back_to_roster
+from app.players_ui import (roster_page, roster_keyboard as players_roster_keyboard,
+                            donation_text, hall_text, back_to_roster,
+                            ranking_page, ranking_keyboard)
 from app.profile_ui import (profile_text, profile_keyboard, detail_text, detail_keyboard,
                             delete_keyboard, progress_text, progress_keyboard)
 from app.war_results import WarAnnouncementStore, classify_result, format_result, recently_finished, war_identity
@@ -267,6 +269,7 @@ def main_menu_keyboard(user_id: int | None = None, captain: bool = False) -> Inl
          InlineKeyboardButton("🏰 Клан", callback_data="menu_clan")],
         [InlineKeyboardButton("🎁 Донат", callback_data="menu_donate"),
          InlineKeyboardButton("🏆 Зал славы", callback_data="menu_hall")],
+        [InlineKeyboardButton("📊 Рейтинг игроков", callback_data="menu_ranking")],
         [InlineKeyboardButton("👤 Профиль", callback_data="menu_profile"),
          InlineKeyboardButton("👥 Аккаунты", callback_data="menu_accounts")],
         [InlineKeyboardButton("📈 Развитие", callback_data="menu_progress"),
@@ -290,7 +293,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/nextwar — подбор состава и история\n"
         "/donate — пожертвования сезона\n"
         "/hall — зал славы клана\n"
-        "/cwl — результаты ЛВК\n"
+        "/cwl — семь раундов и место ЛВК\n"
+        "/ranking war|cwl — рейтинг всех игроков\n"
         "/progress — развитие любого своего аккаунта\n"
         "/captain — отчёт для руководства клана\n"
         "/clan — данные клана\n"
@@ -319,6 +323,7 @@ async def sync_bot_commands(bot) -> None:
             BotCommand("war", "⚔️ Текущая война"),
             BotCommand("nextwar", "📋 Следующий состав"),
             BotCommand("cwl", "🏆 Лига CWL"),
+            BotCommand("ranking", "📊 Рейтинг игроков"),
             BotCommand("progress", "📈 Прогресс игрока"),
             BotCommand("staff", "🛡️ Управление кланом"),
             BotCommand("donate", "🎁 Донат сезона"),
@@ -339,6 +344,7 @@ async def sync_bot_commands(bot) -> None:
          BotCommand("war", "⚔️ Текущая война"),
          BotCommand("nextwar", "📋 Следующий состав"),
          BotCommand("cwl", "🏆 Результаты CWL"),
+         BotCommand("ranking", "📊 Рейтинг игроков"),
          BotCommand("raids", "🏛️ Рейды столицы"),
          BotCommand("help", "❓ Помощь")],
         scope=BotCommandScopeAllGroupChats(),
@@ -1223,6 +1229,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "menu_topplayers": top_players,
         "menu_donate": donations,
         "menu_hall": hall_of_fame,
+        "menu_ranking": clan_ranking,
         "menu_clan": clan,
         "menu_raids": clan_raids,
         "menu_games": clan_games,
@@ -2011,6 +2018,50 @@ async def growth_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await show_owned_progress(update, context)
 
 
+async def clan_ranking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Clan-wide, two-mode rating for all players, not a trophy leaderboard."""
+    args = context.args or []
+    mode = (args[0].lower() if args and args[0].lower() in {"war", "cwl"}
+            else context.user_data.get("ranking_mode", "war"))
+    context.user_data["ranking_mode"] = mode
+    try:
+        async with httpx.AsyncClient(timeout=max(60, settings.request_timeout_seconds)) as client:
+            response = await client.get(build_url("/next-war"), params={"mode": mode})
+            response.raise_for_status()
+            data = response.json()
+        context.user_data["ranking_snapshot"] = data
+        members = data.get("allPlayers") or data.get("recommendedLineup") or []
+        await send_or_edit_message(
+            update, ranking_page(data, mode, 0), parse_mode=ParseMode.HTML,
+            reply_markup=ranking_keyboard(mode, 0, len(members)),
+        )
+    except (httpx.HTTPStatusError, httpx.RequestError):
+        await send_or_edit_message(update, "📊 Рейтинг пока недоступен. Повтори позже.")
+
+
+async def ranking_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.callback_query:
+        return
+    await update.callback_query.answer()
+    _, action, value = (update.callback_query.data or "").split(":", 2)
+    if action == "mode":
+        context.args = [value]
+        await clan_ranking(update, context)
+        return
+    mode = context.user_data.get("ranking_mode", "war")
+    data = context.user_data.get("ranking_snapshot")
+    if data is None or data.get("mode") != mode:
+        context.args = [mode]
+        await clan_ranking(update, context)
+        return
+    members = data.get("allPlayers") or data.get("recommendedLineup") or []
+    page = max(0, min(int(value), max(0, (len(members) - 1) // 10)))
+    await send_or_edit_message(
+        update, ranking_page(data, mode, page), parse_mode=ParseMode.HTML,
+        reply_markup=ranking_keyboard(mode, page, len(members)),
+    )
+
+
 async def cwl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message and not update.callback_query:
         return
@@ -2034,12 +2085,24 @@ async def next_war_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         mode = context.user_data.get("lineup_mode", "war")
     if mode not in {"war", "cwl"}:
         mode = "war"
+    requested_size = None
+    size_arg = next((arg for arg in args if str(arg).isdigit()), None)
+    if size_arg is not None:
+        if not args or args[0].isdigit():
+            mode = "war"
+        if mode != "war" or int(size_arg) not in range(15, 51, 5):
+            await send_or_edit_message(update, "Для КВ размер 15, 20, 25 ... 50; для ЛВК всегда 15.")
+            return
+        requested_size = int(size_arg)
     context.user_data["lineup_mode"] = mode
+    params = {"mode": mode}
+    if requested_size is not None:
+        params["size"] = requested_size
     msg = await send_or_edit_message(update, "⏳ Анализирую реальные войны и согласие игроков...",
                                      parse_mode=None)
     try:
         async with httpx.AsyncClient(timeout=max(60, settings.request_timeout_seconds)) as client:
-            response = await client.get(build_url("/next-war"), params={"mode": mode})
+            response = await client.get(build_url("/next-war"), params=params)
             response.raise_for_status()
             data = response.json()
         # The backend intentionally has no access to Telegram identities.
@@ -2154,6 +2217,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("war", war))
     application.add_handler(CommandHandler("nextwar", next_war_analysis))
     application.add_handler(CommandHandler("cwl", cwl))
+    application.add_handler(CommandHandler("ranking", clan_ranking))
     application.add_handler(CommandHandler("progress", progress))
     application.add_handler(CommandHandler("captain", captain_report))
     application.add_handler(CommandHandler("staff", staff))
@@ -2178,6 +2242,7 @@ async def main() -> None:
     application.add_handler(CallbackQueryHandler(bind_cancel, pattern="^bind_cancel$"))
     application.add_handler(CallbackQueryHandler(roster_callback, pattern=r"^pick:(manual|page|player):[0-9]+$"))
     application.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
+    application.add_handler(CallbackQueryHandler(ranking_callback, pattern=r"^rank:(mode:(war|cwl)|page:[0-9]+)$"))
     application.add_handler(CallbackQueryHandler(players_callback, pattern=r"^players:(view|page|hall|donate):[0-9]+$"))
     application.add_handler(CallbackQueryHandler(account_callback, pattern=r"^acct:(list|view|primary|delete|confirm|progress):[0-9]+$"))
     application.add_handler(CallbackQueryHandler(growth_callback, pattern=r"^growth:days:(0|7|30)$"))
