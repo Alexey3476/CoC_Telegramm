@@ -33,6 +33,7 @@ from app.coc_client import (
 from app.settings import settings, validate_settings
 from app.war_history import WarHistory
 from app.progress import ProgressStore
+from app.selection import SelectionStore
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -101,6 +102,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     history_path = os.environ.get("WAR_HISTORY_DB_PATH", "/data/war_history.db")
     app.state.history = WarHistory(history_path)
     app.state.progress = ProgressStore(os.environ.get("PLAYER_PROGRESS_DB_PATH", "/data/player_progress.db"))
+    app.state.selection = SelectionStore(os.environ.get("SELECTION_DB_PATH", "/data/selection.db"))
     poller = asyncio.create_task(
         collect_war_history(client, redis, app.state.history),
         name="war-history-poller",
@@ -357,13 +359,68 @@ async def activity(request: Request):
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+class PreferenceUpdate(BaseModel):
+    preference: str
+
+
+class WeightUpdate(BaseModel):
+    metric: str
+    value: float
+
+
+class ManualLastSeenUpdate(BaseModel):
+    last_seen_at: str | None = None
+    reported_by: int
+
+
+@app.get("/selection/weights")
+async def selection_weights(request: Request):
+    return {"weights": request.app.state.selection.weights()}
+
+
+@app.post("/selection/weights")
+async def selection_weight_update(body: WeightUpdate, request: Request):
+    try:
+        return {"weights": request.app.state.selection.set_weight(body.metric, body.value)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/selection/cwl/{tag}")
+async def selection_cwl_preference(tag: str, body: PreferenceUpdate, request: Request):
+    try:
+        player_tag = normalize_tag(tag)
+        request.app.state.selection.set_cwl(normalize_tag(settings.coc_clan_tag), player_tag,
+                                            body.preference)
+        return {"tag": player_tag, "preference": body.preference}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/selection/lastseen/{tag}")
+async def selection_last_seen(tag: str, body: ManualLastSeenUpdate, request: Request):
+    try:
+        player_tag = normalize_tag(tag)
+        request.app.state.selection.report_last_seen(
+            normalize_tag(settings.coc_clan_tag), player_tag,
+            body.last_seen_at, body.reported_by,
+        )
+        return {"tag": player_tag, "lastSeenSource": "reported_by_leadership",
+                "lastSeenManual": body.last_seen_at}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/next-war")
-async def next_war(request: Request):
+async def next_war(request: Request, mode: str = "war"):
     """Analyze and recommend lineup for next war."""
+    if mode not in {"war", "cwl"}:
+        raise HTTPException(status_code=400, detail="mode must be war or cwl")
     redis = get_redis(request)
     client = get_http_client(request)
     try:
-        return await get_next_war_analysis(client, redis, request.app.state.history)
+        return await get_next_war_analysis(client, redis, request.app.state.history,
+                                           request.app.state.selection, mode=mode)
     except InvalidTagError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except UnauthorizedError as exc:

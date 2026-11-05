@@ -6,7 +6,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-FIELDS = ("townHallLevel", "expLevel", "bestTrophies", "warStars", "clanCapitalContributions")
+FIELDS = ("townHallLevel", "expLevel", "bestTrophies", "warStars", "clanCapitalContributions", "attackWins", "donations")
 
 
 def compact_profile(profile: dict) -> dict:

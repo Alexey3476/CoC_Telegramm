@@ -11,6 +11,7 @@ from app.cache import TTLCache
 from app.cache import get_cached_json, set_cached_json
 from app.settings import settings
 from app.war_history import WarHistory, summarize_wars
+from app.selection import SelectionStore, score_and_categorize
 
 logger = logging.getLogger(__name__)
 
@@ -391,6 +392,8 @@ async def get_next_war_analysis(
     client: httpx.AsyncClient,
     redis: TTLCache,
     history: WarHistory | None = None,
+    policy: SelectionStore | None = None,
+    mode: str = "war",
 ) -> dict[str, Any]:
     """Evidence-based lineup. Unknown history is missing data, not zero performance."""
     clan_data = await get_clan(client, redis)
@@ -464,23 +467,40 @@ async def get_next_war_analysis(
             "combatReadiness": combat_score,
             "warReadiness": readiness,
         })
-    ranking.sort(
-        key=lambda m: (m["warPreference"] != "in", -m["warReadiness"], -(m["townHallLevel"] or 0))
-    )
+    # CWL bonuses use only observed finished CWL wars, never regular war attacks.
+    if history:
+        cwl_wars = [w for w in history.completed(25)
+                    if w.get("tag") or w.get("attacksPerMember") is None]
+        cwl_history = summarize_wars(cwl_wars, clan_tag)
+    else:
+        cwl_history = {}
+    for member in ranking:
+        h = cwl_history.get(member["tag"]) or {}
+        member["cwlWars"] = h.get("wars", 0)
+        member["cwlAverageStars"] = h.get("averageStars")
+        member["cwlMissedAttacks"] = h.get("missedAttacks")
+    if policy:
+        selected = score_and_categorize(
+            ranking, policy.weights(), policy.get_preferences(clan_tag),
+            mode=mode, size=suggested_size,
+        )
+    else:
+        ranking.sort(key=lambda m: (m["warPreference"] != "in", -m["warReadiness"],
+                                   -(m["townHallLevel"] or 0)))
+        selected = {"recommendedLineup": ranking, "recommendedSize": suggested_size}
     return {
+        **selected,
         "clanName": clan_data.get("name"),
         "clanTag": clan_data.get("tag"),
         "cwlState": cwl_state,
         "currentWarState": current_state,
-        "recommendedLineup": ranking,
-        "recommendedSize": suggested_size,
-        "topTen": ranking[:10],
+        "topTen": selected["recommendedLineup"][:10],
         "historyKnown": bool(history_stats),
         "observedWarCount": len(history.completed(20)) if history else 0,
         "analysisFactors": {
             "lastWarPerformance": "Только сохранённые завершённые войны: пропуски, звёзды и уровень цели. Неизвестное не считается нулём.",
             "combatReadiness": "Ратуша, уровни героев и снаряжения (если профиль доступен).",
-            "warReadiness": "55% подтверждённой военной статистики и 45% силы; при отсутствии истории только сила.",
-            "sortedBy": "Предпочтение участия, затем расчётный рейтинг",
+            "warReadiness": "Сравнивай вклад компонентов в таблице весов. Пропуски и уровень цели учитываются только при наличии истории.",
+            "sortedBy": "Категория доступности, затем взвешенный балл по имеющимся сигналам",
         },
     }
