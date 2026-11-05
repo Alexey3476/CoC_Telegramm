@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -16,6 +18,8 @@ from app.coc_client import (
     get_clan,
     get_player,
     get_war,
+    get_regular_war,
+    get_league_wars,
     get_clan_members,
     get_clan_activity_report,
     get_clan_raids,
@@ -26,9 +30,31 @@ from app.coc_client import (
     encode_tag,
 )
 from app.settings import settings, validate_settings
+from app.war_history import WarHistory
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
+
+
+async def collect_war_history(
+    client: httpx.AsyncClient, cache: TTLCache, history: WarHistory
+) -> None:
+    """Periodically save regular and CWL wars, including completed CWL rounds."""
+    while True:
+        try:
+            regular = await get_regular_war(client, cache)
+            if history.save(regular):
+                logger.info("Saved regular clan war snapshot")
+            _, cwl_wars = await get_league_wars(client, cache)
+            for war in cwl_wars:
+                history.save(war)
+            if cwl_wars:
+                logger.info("Reviewed %s CWL wars", len(cwl_wars))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("War snapshot collection failed; will retry")
+        await asyncio.sleep(300)
 
 
 @asynccontextmanager
@@ -46,10 +72,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.redis = redis
     app.state.http_client = client
-    logger.info("Backend startup complete")
+    history_path = os.environ.get("WAR_HISTORY_DB_PATH", "/data/war_history.db")
+    app.state.history = WarHistory(history_path)
+    poller = asyncio.create_task(
+        collect_war_history(client, redis, app.state.history),
+        name="war-history-poller",
+    )
+    logger.info("Backend startup complete; war history DB=%s", history_path)
     try:
         yield
     finally:
+        poller.cancel()
+        try:
+            await poller
+        except asyncio.CancelledError:
+            pass
         await client.aclose()
         await redis.close()
         logger.info("Backend shutdown complete")
@@ -258,7 +295,7 @@ async def next_war(request: Request):
     redis = get_redis(request)
     client = get_http_client(request)
     try:
-        return await get_next_war_analysis(client, redis)
+        return await get_next_war_analysis(client, redis, request.app.state.history)
     except InvalidTagError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except UnauthorizedError as exc:
