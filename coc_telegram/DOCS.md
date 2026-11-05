@@ -26,3 +26,15 @@ The version in `config.yaml` matches the tag on `ghcr.io/beerlogger01/coc-telegr
 ## War analytics
 
 War snapshots are sampled locally every five minutes, including clan war league rounds. The bot only uses captured, completed wars for attack reliability: missing attacks, stars and town hall of attacked bases. Historic player-level attacks are not available from the regular public war log. Until completed snapshots exist, reliability remains **unknown** (not zero). The public API also does not reliably report player last-online time or Clan Games individual progress.
+
+## Version 0.2.0 changes
+- Telegram slash command menu and interactive dashboard are synchronized.
+- Binding offers nickname suggestions and a paginated roster; game-token verification remains mandatory.
+- War and raid dates are rendered in Europe/Berlin time, including DST.
+- War lineup selection is paginated and labels incomplete historical evidence.
+- Verified regular group members receive CoC nickname tags on join and daily at 09:00 Berlin time. Grant Manage Tags permission. Admin titles are never overwritten.
+- Telegram bot token URLs and exception logging are redacted. Revoke any previously exposed token.
+
+## Development snapshots
+
+Daily public player-profile snapshots are saved in `/data/player_progress.db` without credentials. `/progress` compares hero, equipment, Town Hall and documented lifetime counters with the previous saved day. No active upgrade timers are inferred.

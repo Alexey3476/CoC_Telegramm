@@ -145,6 +145,54 @@ async def get_league_wars(
     return group, [war for war in fetched if war is not None]
 
 
+def summarize_cwl(group: dict[str, Any], wars: list[dict[str, Any]], clan_tag: str) -> dict[str, Any]:
+    """Our own observed CWL results; never invent the official league standings."""
+    observed = []
+    seen = set()
+    for war in sorted(wars, key=lambda x: x.get("startTime") or ""):
+        own, enemy = war.get("clan") or {}, war.get("opponent") or {}
+        if enemy.get("tag") == clan_tag:
+            own, enemy = enemy, own
+        if own.get("tag") != clan_tag:
+            continue
+        identity = (war.get("startTime"), enemy.get("tag"))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        s, e = int(own.get("stars") or 0), int(enemy.get("stars") or 0)
+        d = float(own.get("destructionPercentage") or 0) - float(enemy.get("destructionPercentage") or 0)
+        result = "pending"
+        if war.get("state") == "warEnded":
+            result = "win" if s > e or (s == e and d > 0) else ("draw" if s == e and d == 0 else "loss")
+        observed.append({
+            "enemy": enemy.get("name") or "Соперник", "result": result,
+            "stars": s, "enemyStars": e, "startTime": war.get("startTime"),
+        })
+    return {
+        "state": group.get("state") or "notInWar",
+        "scheduledRounds": len(group.get("rounds") or []),
+        "observedRounds": len(observed),
+        "wins": sum(x["result"] == "win" for x in observed),
+        "draws": sum(x["result"] == "draw" for x in observed),
+        "losses": sum(x["result"] == "loss" for x in observed),
+        "rounds": observed,
+    }
+
+
+async def get_cwl_summary(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
+    group, wars = await get_league_wars(client, redis)
+    return summarize_cwl(group, wars, normalize_tag(settings.coc_clan_tag))
+
+
+def orient_war_for_clan(war: dict[str, Any], clan_tag: str) -> dict[str, Any]:
+    """Keep our side under 'clan', even when CWL represents us as opponent."""
+    home = war.get("clan") or {}
+    away = war.get("opponent") or {}
+    if home.get("tag") != clan_tag and away.get("tag") == clan_tag:
+        return {**war, "clan": away, "opponent": home}
+    return war
+
+
 async def get_war(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
     """Regular current war, or the current CWL war when the regular endpoint is empty."""
     regular = await get_regular_war(client, redis)
@@ -154,10 +202,11 @@ async def get_war(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
     live = [war for war in wars if war.get("state") in {"preparation", "inWar"}]
     if not live:
         return regular
-    return max(
+    selected = max(
         live,
         key=lambda war: (war.get("state") == "inWar", war.get("startTime") or ""),
     )
+    return orient_war_for_clan(selected, normalize_tag(settings.coc_clan_tag))
 
 
 async def get_clan_members(client: httpx.AsyncClient, redis: TTLCache, limit: int = 50) -> dict[str, Any]:
@@ -255,27 +304,20 @@ async def get_clan_activity_report(client: httpx.AsyncClient, redis: TTLCache) -
     }
 
 async def get_clan_raids(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
-    """Get clan raids (capital games) information."""
+    """Return the latest real raid season, including completed results."""
     clan_tag = normalize_tag(settings.coc_clan_tag)
-    cache_key = f"raids:{clan_tag}"
-    url = f"{settings.coc_api_base}/clans/{encode_tag(clan_tag)}/capitalraidseasons"
-    
-    data = await fetch_with_cache(client, redis, cache_key, url)
-    items = data.get("items", [])
+    data = await fetch_with_cache(
+        client, redis, f"raids:{clan_tag}",
+        f"{settings.coc_api_base}/clans/{encode_tag(clan_tag)}/capitalraidseasons",
+    )
+    items = data.get("items") or []
     if not items:
         return {"currentRaid": None}
+    latest = items[0]
+    fields = ("state", "startTime", "endTime", "capitalTotalLoot", "raidsCompleted",
+              "totalAttacks", "offensiveReward", "defensiveReward", "members")
+    return {"currentRaid": {key: latest[key] for key in fields if key in latest}}
 
-    current = items[0]
-    raid_info = {
-        "state": current.get("state", "unknown"),
-        "capitalName": "Capital Raid",
-        "startTime": current.get("startTime", "N/A"),
-        "endTime": current.get("endTime", "N/A"),
-    }
-    if raid_info["state"] == "ongoing":
-        resources = (current.get("clan") or {}).get("resources", [])
-        raid_info["clan"] = {"resources": resources}
-    return {"currentRaid": raid_info}
 
 async def get_clan_games(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
     """Report that Clan Games progress is not exposed by the public API."""
@@ -355,9 +397,11 @@ async def get_next_war_analysis(
     members = clan_data.get("memberList", [])
     clan_tag = normalize_tag(settings.coc_clan_tag)
     history_stats = summarize_wars(history.completed(20), clan_tag) if history else {}
+    suggested_size = 15
     try:
         war_data = await get_war(client, redis)
         current_state = war_data.get("state", "unknown")
+        suggested_size = max(5, min(50, int(war_data.get("teamSize") or 15)))
     except (NotFoundError, ForbiddenError, RateLimitError, RuntimeError, TimeoutError):
         current_state = "unavailable"
     try:
@@ -429,6 +473,7 @@ async def get_next_war_analysis(
         "cwlState": cwl_state,
         "currentWarState": current_state,
         "recommendedLineup": ranking,
+        "recommendedSize": suggested_size,
         "topTen": ranking[:10],
         "historyKnown": bool(history_stats),
         "observedWarCount": len(history.completed(20)) if history else 0,

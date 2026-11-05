@@ -68,6 +68,13 @@ class BindingsStorage:
 
     def upsert_binding(self, binding: Binding) -> None:
         with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            owner = conn.execute(
+                "SELECT telegram_user_id FROM bindings WHERE group_id = ? AND coc_player_tag = ?",
+                (binding.group_id, binding.coc_player_tag),
+            ).fetchone()
+            if owner is not None and int(owner[0]) != binding.telegram_user_id:
+                raise ValueError("Player account is already linked to another Telegram user")
             conn.execute(
                 """
                 INSERT INTO bindings (

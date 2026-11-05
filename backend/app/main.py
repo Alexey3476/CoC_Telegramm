@@ -26,11 +26,13 @@ from app.coc_client import (
     get_clan_games,
     get_player_activity,
     get_next_war_analysis,
+    get_cwl_summary,
     normalize_tag,
     encode_tag,
 )
 from app.settings import settings, validate_settings
 from app.war_history import WarHistory
+from app.progress import ProgressStore
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -57,6 +59,30 @@ async def collect_war_history(
         await asyncio.sleep(300)
 
 
+async def collect_player_progress(client: httpx.AsyncClient, cache: TTLCache, store: ProgressStore):
+    """Snapshot all clan members at most once per day; retry transient failures."""
+    await asyncio.sleep(30)
+    while True:
+        try:
+            clan = await get_clan(client, cache)
+            semaphore = asyncio.Semaphore(3)
+            async def sample(member: dict):
+                if not member.get("tag"):
+                    return
+                async with semaphore:
+                    try:
+                        profile = await get_player(client, cache, member["tag"])
+                        store.record(profile)
+                    except Exception:
+                        logger.warning("Could not collect one player snapshot")
+            await asyncio.gather(*(sample(m) for m in clan.get("memberList", [])))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Player progress snapshot unavailable; will retry")
+        await asyncio.sleep(6 * 3600)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     missing = validate_settings()
@@ -74,15 +100,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.http_client = client
     history_path = os.environ.get("WAR_HISTORY_DB_PATH", "/data/war_history.db")
     app.state.history = WarHistory(history_path)
+    app.state.progress = ProgressStore(os.environ.get("PLAYER_PROGRESS_DB_PATH", "/data/player_progress.db"))
     poller = asyncio.create_task(
         collect_war_history(client, redis, app.state.history),
         name="war-history-poller",
+    )
+    progress_poller = asyncio.create_task(
+        collect_player_progress(client, redis, app.state.progress), name="player-progress-poller"
     )
     logger.info("Backend startup complete; war history DB=%s", history_path)
     try:
         yield
     finally:
         poller.cancel()
+        progress_poller.cancel()
+        try:
+            await progress_poller
+        except asyncio.CancelledError:
+            pass
         try:
             await poller
         except asyncio.CancelledError:
@@ -190,6 +225,39 @@ async def top_players(request: Request, limit: int = 10):
         raise HTTPException(status_code=504, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/cwl")
+async def cwl(request: Request):
+    try:
+        return await get_cwl_summary(get_http_client(request), get_redis(request))
+    except UnauthorizedError as exc:
+        raise HTTPException(status_code=401, detail="CWL token invalid") from exc
+    except ForbiddenError as exc:
+        raise HTTPException(status_code=403, detail="CWL access forbidden") from exc
+    except RateLimitError as exc:
+        raise HTTPException(status_code=429, detail="CWL API rate limit") from exc
+    except (RuntimeError, TimeoutError) as exc:
+        raise HTTPException(status_code=502, detail="CWL API unavailable") from exc
+
+
+@app.get("/progress/{tag}")
+async def progress(tag: str, request: Request):
+    try:
+        profile = await get_player(get_http_client(request), get_redis(request), tag)
+        return request.app.state.progress.record(profile)
+    except InvalidTagError as exc:
+        raise HTTPException(status_code=400, detail="Invalid player tag") from exc
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Player not found") from exc
+    except UnauthorizedError as exc:
+        raise HTTPException(status_code=401, detail="Invalid Clash API token") from exc
+    except ForbiddenError as exc:
+        raise HTTPException(status_code=403, detail="Clash API IP/token forbidden") from exc
+    except RateLimitError as exc:
+        raise HTTPException(status_code=429, detail="Clash API rate limited") from exc
+    except (RuntimeError, TimeoutError) as exc:
+        raise HTTPException(status_code=502, detail="Clash API unavailable") from exc
 
 
 @app.get("/health")
