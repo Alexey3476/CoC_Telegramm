@@ -29,8 +29,19 @@ def test_consecutive_misses_only_when_in_war_and_no_attacks():
 
 
 def test_no_clan_games_fabrication_or_bonus_from_missing_raid():
-    ranking = promotion_score({"history": {"wars": 5, "averageWeightedStars": 2.7, "reliabilityPct": 100},
+    ranking = promotion_score({"history": {"wars": 5, "attacksUsed": 10, "attacksPossible": 10,
+                                           "averageWeightedStars": 2.7, "reliabilityPct": 100},
                                "donations": 90}, 100, 0)
     assert ranking["score"] is not None
     assert ranking["coverage"] == 80
     assert ranking["clanGames"] is None
+
+
+def test_promotion_does_not_invent_attendance_for_unknown_attack_counts():
+    incomplete = promotion_score({"history": {"wars": 5, "averageWeightedStars": 2.7,
+                                               "reliabilityPct": 100},
+                                  "donations": 90}, 100, 0)
+    # No observed attacks or actual raid record => only season donations are supported.
+    assert incomplete["coverage"] == 25
+    assert incomplete["warQuality"] is None
+    assert incomplete["clanGames"] is None
