@@ -1553,7 +1553,7 @@ def format_top_players(payload: dict[str, Any]) -> str:
         for index, player in enumerate(members, 1):
             # HTML names must be escaped, and each dynamic field is bounded.
             # Never truncate final HTML: cutting inside &amp; or <b> breaks Telegram.
-            name = html.escape(str(player.get("name") or "Игрок")[:48])
+            name = html.escape(str(player.get("name") or "Игрок")[:24])
             th = html.escape(str(player.get("townHallLevel") or "?")[:8])
             donations = html.escape(str(player.get("donations") if player.get("donations") is not None else 0)[:12])
             attacks = html.escape(str(player.get("warAttacks") if player.get("warAttacks") is not None else 0)[:12])
