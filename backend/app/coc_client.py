@@ -168,7 +168,6 @@ def summarize_cwl(group: dict[str, Any], wars: list[dict[str, Any]], clan_tag: s
     results. This calculation is not an official season-end placement.
     """
     group_rounds = group.get("rounds") or []
-    war_by_tag = {war["_warTag"]: war for war in wars if war.get("_warTag")}
     positions = {}
     for number, round_data in enumerate(group_rounds, start=1):
         for tag in round_data.get("warTags", []):
@@ -231,10 +230,10 @@ def summarize_cwl(group: dict[str, Any], wars: list[dict[str, Any]], clan_tag: s
             without_number = next((r for r in observed if r.get("round") is None
                                    and r not in rounds), None)
             found = without_number
-        rounds.append({"round": number, **(found or {
+        rounds.append({**(found or {
             "enemy": None, "result": "upcoming", "stars": None, "enemyStars": None,
             "startTime": None,
-        })})
+        }), "round": number})
     for entry in group_members.values():
         entry["totalStars"] = entry["stars"] + entry["bonusStars"]
         entry["destruction"] = round(entry["destruction"], 2)
@@ -476,6 +475,7 @@ async def get_next_war_analysis(
     history: WarHistory | None = None,
     policy: SelectionStore | None = None,
     mode: str = "war",
+    size: int | None = None,
 ) -> dict[str, Any]:
     """Evidence-based lineup. Unknown history is missing data, not zero performance."""
     clan_data = await get_clan(client, redis)
@@ -510,9 +510,17 @@ async def get_next_war_analysis(
     try:
         war_data = await get_war(client, redis)
         current_state = war_data.get("state", "unknown")
-        suggested_size = max(5, min(50, int(war_data.get("teamSize") or 15)))
+        if mode == "war":
+            reported = int(war_data.get("teamSize") or 15)
+            suggested_size = reported if reported in range(15, 51, 5) else 15
     except (NotFoundError, ForbiddenError, RateLimitError, RuntimeError, TimeoutError):
         current_state = "unavailable"
+    if mode == "cwl":
+        suggested_size = 15
+    elif size is not None:
+        if size not in range(15, 51, 5):
+            raise ValueError("Regular-war size must be 15, 20, ... or 50")
+        suggested_size = size
     try:
         cwl_url = f"{settings.coc_api_base}/clans/{encode_tag(clan_tag)}/currentwar/leaguegroup"
         cwl_data = await fetch_with_cache(client, redis, f"cwl:{clan_tag}", cwl_url)
@@ -605,7 +613,7 @@ async def get_next_war_analysis(
         "observedWarCount": len(archived),
         "analysisFactors": {
             "lastWarPerformance": "Только сохранённые завершённые войны: пропуски, звёзды и уровень цели. Неизвестное не считается нулём.",
-            "combatReadiness": "Сравнение уровней героев, снаряжения и лиги только среди участников с той же ратушей; без сверстников оценка нейтральная.",
+            "combatReadiness": "Герои, снаряжение, опыт и лига относительно игроков с той же TH. Для ЛВК TH отдельно даёт преимущество; защита не доступна API.",
             "warReadiness": "Сравнивай вклад компонентов в таблице весов. Пропуски и уровень цели учитываются только при наличии истории.",
             "sortedBy": "Категория доступности, затем взвешенный балл по имеющимся сигналам",
         },
