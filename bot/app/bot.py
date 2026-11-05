@@ -1872,43 +1872,58 @@ async def ai_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await update.message.reply_text(safe_reply)
 
 
-async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Observed development between real daily CoC profile snapshots."""
-    if not update.effective_user:
+async def show_owned_progress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Render selected alt and interval, using independent persisted tag history."""
+    if not update.effective_user or not ensure_private_chat(update):
         return
+    profiles = context.user_data.get("own_profiles") or await _load_owned_profiles(update, context)
+    if not profiles:
+        await send_or_edit_message(update, "Сначала привяжи игровой аккаунт через /bind.")
+        return
+    idx = max(0, min(len(profiles) - 1, int(context.user_data.get("progress_index", 0))))
+    days = int(context.user_data.get("progress_days", 7))
+    days = days if days in {0,7,30} else 7
+    player = profiles[idx]
     storage: BindingsStorage = context.application.bot_data["storage"]
-    binding = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
-    if not binding:
-        await send_or_edit_message(update, "Сначала привяжи аккаунт через /bind.")
+    authorized = {account.coc_player_tag for account in
+                  storage.get_user_accounts(settings.clan_group_id or 0, update.effective_user.id)}
+    if player["tag"] not in authorized:
+        await send_or_edit_message(update, "Аккаунт больше не привязан к твоему Telegram.")
         return
     try:
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
-            data = await fetch_json(client, f"/progress/{encode_tag(binding.coc_player_tag)}")
-        lines = ["📈 <b>Развитие аккаунта</b>",
-                 html.escape(str(data.get("name") or binding.coc_player_tag)),
-                 f"Снимок: {data.get('snapshotDay')}"]
-        if not data.get("historyAvailable"):
-            lines.append("\nПервый снимок сохранён. Сравнение появится после следующего дня.")
-        else:
-            lines.append(f"Сравнение с: {data.get('comparisonDay')}")
-            changes = data.get("changes") or {}
-            names = {"townHallLevel": "Ратуша", "expLevel": "Опыт",
-                     "bestTrophies": "Рекорд кубков", "warStars": "Военные звёзды",
-                     "clanCapitalContributions": "Вклад в столицу"}
-            for key, label in names.items():
-                if key in changes:
-                    delta = changes[key]
-                    lines.append(f"• {label}: {delta['from']} → {delta['to']}")
-            for field, label in (("heroes", "Герои"), ("heroEquipment", "Снаряжение")):
-                for item, delta in changes.get(field, {}).items():
-                    lines.append(f"• {label}: {html.escape(item)} {delta['from']} → {delta['to']}")
-            if not changes:
-                lines.append("Изменений относительно предыдущего дня не найдено.")
-        lines.append("\nℹ️ Только изменения, подтверждённые API; не таймеры улучшений.")
-        await send_or_edit_message(update, "\n".join(lines)[:4000], parse_mode=ParseMode.HTML)
-    except (httpx.RequestError, httpx.HTTPStatusError):
-        logger.warning("Player progress unavailable")
-        await send_or_edit_message(update, "Не удалось получить историю развития.")
+            response = await client.get(
+                build_url(f"/progress/{encode_tag(player['tag'])}"),
+                params={"days": days},
+            )
+            response.raise_for_status()
+            data = response.json()
+        await send_or_edit_message(
+            update,
+            progress_text(data, player.get("name") or player["tag"], days),
+            parse_mode=ParseMode.HTML, reply_markup=progress_keyboard(profiles,idx,days),
+        )
+    except (httpx.HTTPStatusError, httpx.RequestError):
+        await send_or_edit_message(update, "Сейчас не удалось получить историю. Попробуй позднее.")
+
+
+async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_user:
+        return
+    if context.args and context.args[0].lower() in {"7","30","all"}:
+        context.user_data["progress_days"] = 0 if context.args[0].lower() == "all" else int(context.args[0])
+    await show_owned_progress(update, context)
+
+
+async def growth_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.callback_query or not ensure_private_chat(update):
+        return
+    await update.callback_query.answer()
+    days = int((update.callback_query.data or "").rsplit(":",1)[-1])
+    if days not in {0,7,30}:
+        return
+    context.user_data["progress_days"] = days
+    await show_owned_progress(update, context)
 
 
 async def cwl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2057,6 +2072,7 @@ async def main() -> None:
     application.add_handler(CallbackQueryHandler(roster_callback, pattern=r"^pick:(manual|page|player):[0-9]+$"))
     application.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
     application.add_handler(CallbackQueryHandler(account_callback, pattern=r"^acct:(list|view|primary|delete|confirm|progress):[0-9]+$"))
+    application.add_handler(CallbackQueryHandler(growth_callback, pattern=r"^growth:days:(0|7|30)$"))
     application.add_handler(CallbackQueryHandler(staff_callback, pattern=r"^staff:(promotion|kick|bonus)$"))
     application.add_handler(CallbackQueryHandler(
         lineup_callback, pattern=r"^lineup:(main|bench|details|about|player|refresh|inactive|optout|needs_review|cwl_excluded|twinks|kick|promotion|bonus|weights):[0-9]+$|^lineup:mode:(war|cwl)$"
