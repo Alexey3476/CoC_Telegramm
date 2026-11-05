@@ -445,10 +445,12 @@ async def selection_last_seen(tag: str, body: ManualLastSeenUpdate, request: Req
 
 
 @app.get("/next-war")
-async def next_war(request: Request, mode: str = "war"):
+async def next_war(request: Request, mode: str = "war", size: int | None = None):
     """Analyze and recommend lineup for next war."""
     if mode not in {"war", "cwl"}:
         raise HTTPException(status_code=400, detail="mode must be war or cwl")
+    if size is not None and (mode != "war" or size not in range(15, 51, 5)):
+        raise HTTPException(status_code=400, detail="war size: 15, 20, ... 50; CWL is 15")
     redis = get_redis(request)
     client = get_http_client(request)
     try:
