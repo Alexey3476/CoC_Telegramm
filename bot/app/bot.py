@@ -25,7 +25,8 @@ from telegram.helpers import escape_markdown
 from app.backend_client import build_url, fetch_json
 from app.bindings_storage import Binding, BindingsStorage
 from app.settings import env_snapshot, settings, settings_snapshot, validate_settings
-from app.ui import format_war_message, format_raid_message, lineup_message, lineup_keyboard, safe_tag_name
+from app.ui import format_war_message, format_raid_message, lineup_message, lineup_keyboard
+from app.tags import assign_game_tag, sync_tags_daily
 from app.binding_ui import sorted_roster, roster_keyboard
 
 log_level = logging.DEBUG if settings.debug else logging.INFO
@@ -1190,11 +1191,14 @@ async def verify_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE)
         except Exception:  # noqa: BLE001
             pass  # Fallback if API fails
         
+        if coc_name:
+            await assign_game_tag(context, update.effective_chat.id, member.id, coc_name)
+
         # Create welcome message
         if coc_name:
             message = (
                 f"✅ {mention}\n"
-                f"🎮 *CoC Ник:* {html.escape(coc_name)}\n"
+                f"🎮 <b>Ник в игре:</b> {html.escape(coc_name)}\n"
                 f"🏷️ *Тег:* {player_tag}\n"
                 f"Добро пожаловать в клан! 🎉"
             )
@@ -1335,19 +1339,9 @@ async def war_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 coc_player_name = members_by_tag[binding.coc_player_tag].get("name")
             
             if coc_player_name:
-                # Try to rename user in chat with CoC nickname
-                try:
-                    await context.bot.get_chat_member(chat_id=group_id, user_id=binding.telegram_user_id)
-                    await context.bot.set_chat_member_custom_title(
-                        chat_id=group_id,
-                        user_id=binding.telegram_user_id,
-                        custom_title=coc_player_name[:16],  # Telegram limit is 16 chars
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    logger.debug("Could not set custom title for user %s: %s", binding.telegram_user_id, exc)
                 # Mention with CoC nickname in parentheses
                 mention = format_mention(binding.telegram_user_id, binding.telegram_full_name)
-                mentions.append(f"{mention} ({coc_player_name})")
+                mentions.append(f"{mention} ({html.escape(str(coc_player_name))})")
             else:
                 # Fallback to regular mention
                 mentions.append(format_mention(binding.telegram_user_id, binding.telegram_full_name))
@@ -1359,9 +1353,9 @@ async def war_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         if not mentions:
             continue
         message = (
-            "War reminder: "
+            "⚔️ Напоминание: "
             + ", ".join(mentions)
-            + " you still have attacks remaining."
+            + " — остались неиспользованные атаки."
         )
         try:
             await context.bot.send_message(
@@ -1693,6 +1687,13 @@ async def main() -> None:
     )
     application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, verify_new_members))
     application.add_error_handler(handle_handler_exception)
+
+    if settings.clan_group_id is not None:
+        application.job_queue.run_daily(
+            sync_tags_daily,
+            time=time(hour=9, minute=0, tzinfo=ZoneInfo("Europe/Berlin")),
+            name="clan-game-nickname-sync",
+        )
 
     if settings.war_reminder_enabled:
         application.job_queue.run_repeating(
