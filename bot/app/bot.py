@@ -1439,40 +1439,33 @@ async def war_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         bindings = storage.get_bindings_for_tags(group_id, tags_missing_attacks)
         if not bindings:
             continue
-        user_ids = [binding.telegram_user_id for binding in bindings]
+        # One Telegram user may own several CoC accounts in the same war.
+        # Mention the owner ONCE while listing all accounts still requiring attacks.
+        user_ids = sorted({binding.telegram_user_id for binding in bindings})
         cooldowns = storage.get_cooldowns(group_id, user_ids)
+        grouped: dict[int, list[Binding]] = {}
+        for binding in bindings:
+            grouped.setdefault(binding.telegram_user_id, []).append(binding)
         mentions: list[str] = []
         reminded_user_ids: list[int] = []
-        
-        # Attempt to rename users and collect mentions
-        for binding in bindings:
-            last_reminded = cooldowns.get(binding.telegram_user_id)
+        for user_id, linked in grouped.items():
+            last_reminded = cooldowns.get(user_id)
             if last_reminded and now - last_reminded < timedelta(hours=1):
                 continue
-            
-            coc_player_name = None
-            if binding.coc_player_tag in members_by_tag:
-                coc_player_name = members_by_tag[binding.coc_player_tag].get("name")
-            
-            if coc_player_name:
-                # Mention with CoC nickname in parentheses
-                mention = format_mention(binding.telegram_user_id, binding.telegram_full_name)
-                mentions.append(f"{mention} ({html.escape(str(coc_player_name))})")
-            else:
-                # Fallback to regular mention
-                mentions.append(format_mention(binding.telegram_user_id, binding.telegram_full_name))
-            
-            reminded_user_ids.append(binding.telegram_user_id)
-            # Add micro pause between mentions to avoid flooding
-            await asyncio.sleep(0.1)
-        
+            display = format_mention(user_id, linked[0].telegram_full_name)
+            games = []
+            for account in linked:
+                member = members_by_tag.get(account.coc_player_tag) or {}
+                game_name = html.escape(str(member.get("name") or account.coc_player_tag))
+                remaining = max(0, int(payload.get("attacksPerMember") or 1) - attacks_used(member))
+                if remaining:
+                    games.append(f"{game_name} ({remaining})")
+            if games:
+                mentions.append(f"{display}: " + ", ".join(games))
+                reminded_user_ids.append(user_id)
         if not mentions:
             continue
-        message = (
-            "⚔️ Напоминание: "
-            + ", ".join(mentions)
-            + " — остались неиспользованные атаки."
-        )
+        message = "⚔️ Остались атаки: " + "; ".join(mentions)
         try:
             await context.bot.send_message(
                 chat_id=group_id,

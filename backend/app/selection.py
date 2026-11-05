@@ -212,6 +212,8 @@ def score_and_categorize(ranking: list[dict], weights: dict[str, float],
     for m in full:
         if m["eligibility"] in {"inactive","optout","needs_review"}:
             groups[m["eligibility"]].append(m)
+    # Weakest evidence-backed cases first; do not sort by base TH alone.
+    groups["kick"].sort(key=lambda m: (m["selectionScore"] if m["selectionScore"] is not None else 101))
     groups["promotion"].sort(key=lambda m: -(m["selectionScore"] or 0))
     groups["bonus"].sort(key=lambda m: -(m["cwlAverageStars"] or 0))
     return {"mode": mode, "weights": weights, "categories": groups,
