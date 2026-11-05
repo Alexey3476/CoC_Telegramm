@@ -120,3 +120,16 @@ def test_relative_last_seen_and_refuse_future():
         assert False
     except ValueError:
         pass
+
+
+
+def test_no_history_receives_neutral_prior(tmp_path):
+    db = BindingsStorage(str(tmp_path / "db.sqlite"))
+    new = one("#NEW", score=99, wars=0)
+    known = one("#KNOWN", score=85, wars=10, reliability=100, avg=2.9)
+    data = build_selection({"recommendedLineup": [new, known], "recommendedSize": 2},
+                           db, -100, "war", SelectionPolicy(), NOW)
+    by_tag = {x["tag"]: x for x in data["recommendedLineup"]}
+    assert by_tag["#KNOWN"]["selectionScore"] > by_tag["#NEW"]["selectionScore"]
+    assert by_tag["#NEW"]["scoreBreakdown"]["components"]["attendance"] is None
+    assert by_tag["#NEW"]["scoreBreakdown"]["rankingComponents"]["attendance"] == 50.0
