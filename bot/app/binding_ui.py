@@ -33,3 +33,8 @@ def roster_keyboard(members: list[dict], page: int = 0) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton("✍️ Ввести тег", callback_data="pick:manual:0")])
     rows.append([InlineKeyboardButton("Отмена", callback_data="bind_cancel")])
     return InlineKeyboardMarkup(rows)
+
+
+def available_roster(members: list[dict], linked_tags: set[str]) -> list[dict]:
+    """Exclude all already verified game tags, regardless of Telegram owner."""
+    return [member for member in members if member.get("tag") and member["tag"] not in linked_tags]

@@ -28,7 +28,7 @@ from app.bindings_storage import Binding, BindingsStorage
 from app.settings import env_snapshot, settings, settings_snapshot, validate_settings
 from app.ui import format_war_message, format_raid_message, lineup_message, lineup_keyboard, format_cwl_message
 from app.tags import assign_game_tag, sync_tags_daily
-from app.binding_ui import sorted_roster, roster_keyboard
+from app.binding_ui import sorted_roster, roster_keyboard, available_roster
 from app.captain import is_captain, captain_report_text
 from app.war_results import WarAnnouncementStore, classify_result, format_result, recently_finished, war_identity
 
@@ -598,13 +598,31 @@ async def show_player_picker(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
             clan_data = await fetch_json(client, "/clan")
+        storage: BindingsStorage = context.application.bot_data["storage"]
+        group_id = settings.clan_group_id or 0
+        roster = clan_data.get("memberList") or []
+        linked = storage.get_bindings_for_tags(
+            group_id, [str(member["tag"]) for member in roster if member.get("tag")],
+        )
+        # Already linked accounts must not be offered to new or returning users.
+        # This includes the current user's own alts: manage them in /profile.
+        taken = {account.coc_player_tag for account in linked}
         members = sorted_roster(
-            clan_data.get("memberList") or [],
+            available_roster(roster, taken),
             update.effective_user.full_name,
             update.effective_user.username or "",
         )
         if not members:
-            raise ValueError("empty member list")
+            context.user_data["picker_members"] = []
+            context.user_data["awaiting_tag"] = False
+            await send_or_edit_message(
+                update,
+                "🔒 Все участники клана уже привязаны к Telegram. "
+                "Если хочешь управлять своими аккаунтами, открой /profile. "
+                "Если привязка устарела, руководитель может удалить её через /adminunlink.",
+                parse_mode=None, reply_markup=roster_keyboard([]),
+            )
+            return
         context.user_data["picker_members"] = members
         context.user_data["awaiting_tag"] = False
         await send_or_edit_message(
