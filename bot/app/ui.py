@@ -306,14 +306,52 @@ def format_cwl_message(data: dict) -> str:
     rounds = data.get("rounds") or []
     if data.get("state") == "notInWar" and not rounds:
         return "🏆 <b>Лига клановых войн</b>\nСейчас нет доступных раундов CWL."
-    lines = ["🏆 <b>Лига клановых войн · CWL</b>",
-             f"Раундов в группе: {data.get('scheduledRounds', '?')}",
-             f"Доступно наших войн: {data.get('observedRounds', 0)}",
-             f"✅ {data.get('wins', 0)} побед · 🤝 {data.get('draws', 0)} ничьих · ❌ {data.get('losses', 0)} поражений",
-             ""]
-    results = {"win": "✅ Победа", "draw": "🤝 Ничья", "loss": "❌ Поражение", "pending": "⏳ Не завершена"}
-    for index, war in enumerate(rounds[-10:], start=max(1, len(rounds) - 9)):
-        lines.append(f"<b>{index}. {html.escape(str(war.get('enemy') or '?'))}</b> · {results.get(war.get('result'), '⏳')}")
-        lines.append(f"⭐ {war.get('stars', 0)} : {war.get('enemyStars', 0)} · {game_time(war.get('startTime'))}")
-    lines.append("\nℹ️ Результаты наблюдаемых войн, не официальная таблица мест CWL.")
+    total_rounds = max(7, int(data.get("scheduledRounds") or 0))
+    place = data.get("predictedPlace")
+    standings = data.get("standings") or []
+    qualifier = "Предварительное место" if data.get("standingsProvisional", True) else "Расчётное место"
+    lines = [
+        "🏆 <b>Лига клановых войн · CWL</b>",
+        f"Раундов: {total_rounds} · получено наших войн: {data.get('observedRounds', 0)}",
+        f"✅ {data.get('wins', 0)} · 🤝 {data.get('draws', 0)} · ❌ {data.get('losses', 0)}",
+    ]
+    if place and standings:
+        lines.append(
+            f"🏅 <b>{qualifier}: {place}/{len(standings)}</b> · "
+            f"{data.get('ourTotalStars', '?')} ⭐ (с бонусами за победы)"
+        )
+    lines.append("\n<b>Таблица группы по набранным звёздам:</b>")
+    if standings:
+        for clan in standings:
+            label = html.escape(str(clan.get("name") or "?")[:32])
+            lines.append(
+                f"{clan.get('place')}. {label}: <b>{clan.get('totalStars', 0)} ⭐</b> "
+                f"({clan.get('stars', 0)} + {clan.get('bonusStars', 0)} за победы)"
+            )
+    else:
+        lines.append("Нет доступных результатов других кланов.")
+    lines.append("\n<b>Наши семь раундов:</b>")
+    results = {
+        "win": "✅ Победа", "draw": "🤝 Ничья",
+        "loss": "❌ Поражение", "pending": "⏳ Идёт/готовится",
+        "upcoming": "🔒 Ещё нет данных",
+    }
+    for index in range(1, total_rounds + 1):
+        war = next((r for r in rounds if r.get("round") == index), None)
+        if war is None:
+            war = rounds[index - 1] if index - 1 < len(rounds) else {}
+        name = html.escape(str(war.get("enemy") or "Соперник пока неизвестен")[:36])
+        lines.append(
+            f"{index}. {name} · {results.get(war.get('result'), '🔒 Нет данных')}"
+        )
+        if war.get("stars") is not None:
+            lines.append(
+                f"   ⭐ {war['stars']} : {war.get('enemyStars', '?')} · "
+                f"{game_time(war.get('startTime'))}"
+            )
+    lines.append(
+        "\nℹ️ Место рассчитано по видимым звёздам всех кланов, +10 за завершённую "
+        "победу; при равенстве учитывается разрушение. Текущие/недоступные "
+        "войны могут изменить порядок. Это не официальная таблица CWL."
+    )
     return "\n".join(lines)[:4000]
