@@ -36,6 +36,18 @@ logger.debug("Debug mode enabled")
 # httpx records full Telegram bot tokens in request URLs at INFO level.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+# Scrub Telegram bot tokens from every formatted log line and traceback.
+TOKEN_IN_URL = re.compile(r"/bot\d+:[A-Za-z0-9_-]+")
+
+
+class SecretRedactingFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        return TOKEN_IN_URL.sub("/bot[REDACTED]", super().format(record))
+
+
+for _handler in logging.getLogger().handlers:
+    _handler.setFormatter(SecretRedactingFormatter("%(levelname)s %(name)s %(message)s"))
+
 
 TAG_PATTERN = re.compile(r"^[0289PYLQGRJCUV]+$")
 TAG_EXTRACT_PATTERN = re.compile(r"#?[0289PYLQGRJCUV]{4,}")
