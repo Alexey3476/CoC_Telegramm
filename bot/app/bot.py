@@ -33,6 +33,7 @@ from app.captain import is_captain, captain_report_text
 from app.players_ui import roster_page, roster_keyboard as players_roster_keyboard, donation_text, hall_text, back_to_roster
 from app.profile_ui import (profile_text, profile_keyboard, detail_text, detail_keyboard,
                             delete_keyboard, progress_text, progress_keyboard)
+from app.polls import PollController, PollStore
 from app.war_results import WarAnnouncementStore, classify_result, format_result, recently_finished, war_identity
 
 log_level = logging.DEBUG if settings.debug else logging.INFO
@@ -271,6 +272,8 @@ def main_menu_keyboard(user_id: int | None = None, captain: bool = False) -> Inl
          InlineKeyboardButton("👥 Аккаунты", callback_data="menu_accounts")],
         [InlineKeyboardButton("📈 Развитие", callback_data="menu_progress"),
          InlineKeyboardButton("📊 Веса", callback_data="menu_weights")],
+        [InlineKeyboardButton("📊 Рейтинг клана", callback_data="menu_rating"),
+         InlineKeyboardButton("🗳 Голосование", callback_data="menu_poll")],
         [InlineKeyboardButton("❓ Справка", callback_data="menu_help")],
     ]
     if captain:
@@ -290,7 +293,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/nextwar — подбор состава и история\n"
         "/donate — пожертвования сезона\n"
         "/hall — зал славы клана\n"
-        "/cwl — результаты ЛВК\n"
+        "/cwl — 7 войн ЛВК и место по звёздам\n"
+        "/rating [war|cwl] — рейтинг всего клана\n"
+        "/poll — создать голосование (для руководства, в личке)\n"
+        "/nextwar war 30 — состав КВ 30 × 30\n"
         "/progress — развитие любого своего аккаунта\n"
         "/captain — отчёт для руководства клана\n"
         "/clan — данные клана\n"
@@ -319,6 +325,8 @@ async def sync_bot_commands(bot) -> None:
             BotCommand("war", "⚔️ Текущая война"),
             BotCommand("nextwar", "📋 Следующий состав"),
             BotCommand("cwl", "🏆 Лига CWL"),
+            BotCommand("rating", "📊 Рейтинг клана"),
+            BotCommand("poll", "🗳 Создать голосование"),
             BotCommand("progress", "📈 Прогресс игрока"),
             BotCommand("staff", "🛡️ Управление кланом"),
             BotCommand("donate", "🎁 Донат сезона"),
@@ -339,6 +347,7 @@ async def sync_bot_commands(bot) -> None:
          BotCommand("war", "⚔️ Текущая война"),
          BotCommand("nextwar", "📋 Следующий состав"),
          BotCommand("cwl", "🏆 Результаты CWL"),
+         BotCommand("rating", "📊 Рейтинг клана"),
          BotCommand("raids", "🏛️ Рейды столицы"),
          BotCommand("help", "❓ Помощь")],
         scope=BotCommandScopeAllGroupChats(),
@@ -452,6 +461,7 @@ async def staff(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
          InlineKeyboardButton("📊 Отчёт", callback_data="menu_captain")],
         [InlineKeyboardButton("⚖️ Веса", callback_data="menu_weights"),
          InlineKeyboardButton("👥 Привязки", callback_data="menu_accounts")],
+        [InlineKeyboardButton("🗳 Создать голосование", callback_data="menu_poll")],
         [InlineKeyboardButton("🏠 Штаб", callback_data="menu_home")],
     ]
     await send_or_edit_message(
@@ -1121,7 +1131,7 @@ async def weights(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except (httpx.HTTPStatusError, httpx.RequestError):
         await send_or_edit_message(update, "Не удалось загрузить веса отбора.")
         return
-    labels = [("strength", "🏰 Сила относительно TH и лиги"),
+    labels = [("strength", "🏰 Сила TH и прокачка"),
               ("discipline", "🎯 Дисциплина атак"),
               ("quality", "⭐ Качество атак с учётом цели"),
               ("role", "🛡️ Звание CoC")]
@@ -1230,6 +1240,8 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "menu_nextwar": next_war_analysis,
         "menu_weights": weights,
         "menu_cwl": cwl,
+        "menu_rating": clan_rating,
+        "menu_poll": create_poll,
         "menu_progress": progress,
         "menu_captain": captain_report,
         "menu_staff": staff,
@@ -1276,6 +1288,8 @@ async def private_text_router(update: Update, context: ContextTypes.DEFAULT_TYPE
     """Ensure a private message is processed only once."""
     if context.user_data.get("awaiting_tag") or context.user_data.get("awaiting_player_token"):
         await capture_tag(update, context)
+    elif context.user_data.get("poll_draft"):
+        await context.application.bot_data["polls"].text(update, context)
     else:
         await handle_private_message(update, context)
 
@@ -2035,11 +2049,23 @@ async def next_war_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if mode not in {"war", "cwl"}:
         mode = "war"
     context.user_data["lineup_mode"] = mode
+    if len(args) > 1:
+        try:
+            size = int(args[1])
+            if size not in range(5, 51, 5):
+                raise ValueError
+        except ValueError:
+            await send_or_edit_message(update, "Размер КВ: 5–50 с шагом 5. Пример: /nextwar war 30")
+            return
+        context.user_data["lineup_size"] = size
+    params = {"mode": mode}
+    if mode == "war" and context.user_data.get("lineup_size"):
+        params["size"] = context.user_data["lineup_size"]
     msg = await send_or_edit_message(update, "⏳ Анализирую реальные войны и согласие игроков...",
                                      parse_mode=None)
     try:
         async with httpx.AsyncClient(timeout=max(60, settings.request_timeout_seconds)) as client:
-            response = await client.get(build_url("/next-war"), params={"mode": mode})
+            response = await client.get(build_url("/next-war"), params=params)
             response.raise_for_status()
             data = response.json()
         # The backend intentionally has no access to Telegram identities.
@@ -2090,6 +2116,15 @@ async def lineup_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         context.args = []
         await next_war_analysis(update, context)
         return
+    if stage == "teamsize":
+        size = int(page_raw)
+        if size not in range(5, 51, 5):
+            return
+        context.user_data["lineup_size"] = size
+        context.user_data["lineup_mode"] = "war"
+        context.args = []
+        await next_war_analysis(update, context)
+        return
     if stage == "refresh":
         context.args = []
         await next_war_analysis(update, context)
@@ -2117,6 +2152,15 @@ async def lineup_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
 
 
+async def create_poll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await context.application.bot_data["polls"].begin(update, context)
+
+
+async def clan_rating(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data["lineup_target_stage"] = "ranking"
+    await next_war_analysis(update, context)
+
+
 async def main() -> None:
     """Main async function to start the bot."""
     logger.info("Bot environment snapshot: %s", env_snapshot())
@@ -2141,6 +2185,13 @@ async def main() -> None:
 
     application.bot_data["storage"] = BindingsStorage(settings.bindings_db_path)
     application.bot_data["war_outcomes"] = WarAnnouncementStore(settings.bindings_db_path)
+    polls = PollController(PollStore(settings.bindings_db_path), settings.clan_group_id,
+                           has_captain_access, send_or_edit_message)
+    application.bot_data["polls"] = polls
+    application.add_handler(CommandHandler("poll", create_poll))
+    application.add_handler(CallbackQueryHandler(polls.callback, pattern=r"^poll:(done|time|add|publish|cancel|duration:[0-9]+)$"))
+    application.add_handler(CallbackQueryHandler(polls.vote, pattern=r"^vote:[0-9]+:[0-9]+$"))
+    application.job_queue.run_repeating(polls.finish_due, interval=30, first=5, name="clan-poll-results")
 
     application.add_handler(MessageHandler(filters.COMMAND, log_any_command), group=-1)
     application.add_handler(CommandHandler("start", start))
@@ -2154,6 +2205,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("war", war))
     application.add_handler(CommandHandler("nextwar", next_war_analysis))
     application.add_handler(CommandHandler("cwl", cwl))
+    application.add_handler(CommandHandler("rating", clan_rating))
     application.add_handler(CommandHandler("progress", progress))
     application.add_handler(CommandHandler("captain", captain_report))
     application.add_handler(CommandHandler("staff", staff))
@@ -2183,7 +2235,7 @@ async def main() -> None:
     application.add_handler(CallbackQueryHandler(growth_callback, pattern=r"^growth:days:(0|7|30)$"))
     application.add_handler(CallbackQueryHandler(staff_callback, pattern=r"^staff:(promotion|kick|bonus)$"))
     application.add_handler(CallbackQueryHandler(
-        lineup_callback, pattern=r"^lineup:(main|bench|details|about|player|refresh|inactive|optout|needs_review|cwl_excluded|twinks|kick|promotion|bonus|weights):[0-9]+$|^lineup:mode:(war|cwl)$"
+        lineup_callback, pattern=r"^lineup:(main|bench|ranking|size|teamsize|details|about|player|refresh|inactive|optout|needs_review|cwl_excluded|twinks|kick|promotion|bonus|weights):[0-9]+$|^lineup:mode:(war|cwl)$"
     ))
     
     # One router avoids two handlers replying to a successful token message.

@@ -27,7 +27,7 @@ def profile_text(profiles: list[dict], primary_tag: str | None) -> str:
         league = html.escape(str(p.get("leagueName") or "Неизвестно")[:38])
         lines += [
             f"{mark} <b>{i}. {title}</b> · TH{p.get('townHallLevel') or '?'}",
-            f"   {role_name} · {league} · КВ/ЛВК: {pref}",
+            f"   Ур. {p.get('expLevel') or '?'} · {role_name} · {league} · КВ/ЛВК: {pref}",
             f"   🏆 {p.get('trophies','?')} · 🎁 Донат {p.get('donations','?')} · "
             f"⭐ Войны {p.get('warStars','?')}",
         ]
@@ -59,6 +59,7 @@ def detail_text(profile: dict, is_primary: bool = False) -> str:
         f"👤 <b>{name}</b>{' · ⭐ основной' if is_primary else ''}",
         f"Тег: <code>{html.escape(str(profile.get('tag') or ''))}</code>",
         f"🏰 TH{profile.get('townHallLevel','?')} · 🛡️ {role}",
+        f"📊 Уровень опыта: {profile.get('expLevel') or 'нет данных'}",
         f"🏆 {league} · {profile.get('trophies','?')} кубков",
         f"🎮 Участие КВ/ЛВК: {pref}",
         f"🎁 Донат: {profile.get('donations','?')} · Получено: {profile.get('donationsReceived','?')}",

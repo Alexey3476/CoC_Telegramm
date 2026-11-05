@@ -10,3 +10,8 @@ __pycache__/
 .idea/
 data/bindings.db
 CoC_Telegramm/
+
+
+.venv/
+.pytest_cache/
+.ruff_cache/

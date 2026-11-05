@@ -1,6 +1,6 @@
 # Clash of Clans Telegram Home Server
 
-## Recommended: separate Home Assistant App (v0.2.1)
+## Recommended: separate Home Assistant App (v0.2.3)
 
 This repository installs as a standalone **CoC Telegram Bot** Home Assistant add-on, separate from any smart-home Telegram bot. See [add-on setup, configuration and role model](coc_telegram/DOCS.md). Install the **Beerlogger01** repository in Home Assistant; changes to staging PRs in Alexey3476 are not installed until merged into Beerlogger01/main and the GHCR image is published.
 
@@ -18,6 +18,24 @@ Backend (FastAPI)
 Clash of Clans API
     ↓
 ```
+
+## Version 0.2.3
+
+CWL shows seven rounds, the current group table and placement by total stars
+(attack stars + 10 per completed win, then total destruction). Incomplete API
+results are marked provisional. CWL recommendations always use 15 players;
+regular war supports 5–50 in steps of five via `/nextwar war 30` or the size picker.
+`/rating war` and `/rating cwl` show the full paginated clan ranking.
+Experience level now contributes to same-TH development, alongside home-village
+heroes, equipment and current ranked league. CWL gives greater weight to TH
+strength. Buildings, defenses and live online status remain unavailable through
+the public API; experience is only a proxy for development.
+
+Verified CoC leaders/co-leaders can create a vote in private with `/poll`:
+question → 2–10 answers → duration → preview → publish to the configured clan
+group. One changeable ballot per Telegram user, with automatic results after the
+deadline; published polls and ballots survive restarts. See
+[release notes and limits](coc_telegram/DOCS.md#version-023).
 
 ## Features
 

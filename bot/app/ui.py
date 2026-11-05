@@ -147,8 +147,24 @@ def lineup_keyboard(stage: str = "main", page: int = 0, data: dict | None = None
          InlineKeyboardButton("👥 Твинки", callback_data="lineup:twinks:0")],
         [InlineKeyboardButton("📊 Веса", callback_data="lineup:weights:0"),
          InlineKeyboardButton("ℹ️ Методика", callback_data="lineup:about:0")],
-        [InlineKeyboardButton("👤 Игроки", callback_data="lineup:details:0")],
+        [InlineKeyboardButton("📊 Рейтинг клана", callback_data="lineup:ranking:0"),
+         InlineKeyboardButton("👤 Игроки", callback_data="lineup:details:0")],
     ]
+    if mode == "war":
+        rows.append([InlineKeyboardButton("⚙️ Размер КВ", callback_data="lineup:size:0")])
+        if stage == "size":
+            for start in (5, 30):
+                rows.append([InlineKeyboardButton(f"{n} × {n}", callback_data=f"lineup:teamsize:{n}")
+                             for n in range(start, start + 25, 5)])
+    if stage in {"main", "bench", "ranking", "inactive", "optout", "needs_review", "cwl_excluded", "twinks", "kick", "promotion", "bonus"}:
+        subset = ((data or {}).get("clanRanking") or []) if stage == "ranking" else ((data or {}).get("categories") or {}).get(stage, [])
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton("◀", callback_data=f"lineup:{stage}:{page - 1}"))
+        if (page + 1) * 15 < len(subset):
+            nav.append(InlineKeyboardButton("▶", callback_data=f"lineup:{stage}:{page + 1}"))
+        if nav:
+            rows.append(nav)
     if mode == "cwl":
         rows.append([InlineKeyboardButton("⛔ Пропустили раунд ЛВК", callback_data="lineup:cwl_excluded:0")])
     if captain:
@@ -192,14 +208,16 @@ def lineup_message(data: dict, stage: str = "main", page: int = 0) -> str:
     mode = "ЛВК" if data.get("mode") == "cwl" else "КВ"
     header = (
         f"⚔️ <b>Следующая война · {html.escape(str(data.get('clanName') or 'Клан')[:50])}</b>\n"
-        f"Режим: <b>{mode}</b> · Состав: {len(categories.get('main') or [])} · "
+        f"Режим: <b>{mode}</b> · Состав: {len(categories.get('main') or [])}/{data.get('lineupSize') or size} · "
         f"История: {total} войн\n"
     )
+    if stage == "size":
+        return header + "\nВыбери размер обычной КВ. В ЛВК состав всегда 15 × 15."
     if stage == "weights":
         weights = data.get("weights") or {
             "strength": 20, "discipline": 35, "quality": 35, "role": 10,
         }
-        labels = [("strength", "🏰 Прокачка относительно TH и лиги"),
+        labels = [("strength", "🏰 Сила TH и прокачка"),
                   ("discipline", "🎯 Дисциплина и пропуски"),
                   ("quality", "⭐ Качество атак с учётом силы цели"),
                   ("role", "🛡️ Звание в CoC")]
@@ -222,11 +240,15 @@ def lineup_message(data: dict, stage: str = "main", page: int = 0) -> str:
             "3. Подтверждённая вручную неактивность более 48 ч → отдельный резерв.\n"
             "4. Пропущены три назначенные войны подряд → кандидат на кик, НЕ автоматический кик.\n\n"
             "<b>Рейтинг (после допуска):</b> отдельно настраиваются дисциплина, "
-            "качество атаки с поправкой на ратушу цели, относительная прокачка TH/лига и звание.\n"
-            "Сила сравнивается с аккаунтами той же TH внутри клана. При единственном игроке "
-            "со своей TH компонент нейтральный, а не надуманные 100%.\n"
-            "Прокачка обороны недоступна в публичном CoC API.\n"
-            "Старый индекс учитывал 55% истории и 45% силы; теперь вместо него разные веса КВ/ЛВК.\n"
+            "качество атаки с поправкой на ратушу цели, сила и звание.\n"
+            "КВ: относительная прокачка среди той же TH. ЛВК: 80% сила самой TH "
+            "(100 × (TH / максимальная TH)³), 20% относительная прокачка. "
+            "За максимум берётся не ниже TH18.\n"
+            "Прокачка: 40% герои основной деревни, 35% уровень опыта, "
+            "15% снаряжение, 10% лига. Неизвестные сигналы исключаются; без сверстников — 50.\n"
+            "Уровень опыта — косвенный признак развития, не точная оценка обороны: "
+            "уровни зданий API не передаёт. Лига и звание — дополнительные сигналы.\n"
+            "ЛВК всегда 15 × 15; размер КВ можно выбрать.\n"
             "⚠️ Последний вход НЕ передаётся CoC API. Ручная отметка руководства отдельно "
             "от реальной API-статистики. Все дисциплинарные решения принимает человек."
         )
@@ -249,9 +271,11 @@ def lineup_message(data: dict, stage: str = "main", page: int = 0) -> str:
             f"<b>👤 {html.escape(str(m.get('name') or '?')[:50])}</b> · TH{m.get('townHallLevel') or '?'}",
             f"Тег: <code>{html.escape(str(m.get('tag') or ''))}</code>",
             f"🛡️ {role} · Лига: {html.escape(str(m.get('league') or '?')[:40])}",
+            f"Уровень опыта: {m.get('expLevel') or 'нет данных'} · Место в рейтинге: {m.get('clanRank', 'н/д')}",
             f"Индекс {mode}: {rank} · Достоверность: {m.get('confidence') or 'низкая'}",
             f"Относительная прокачка: {m.get('relativeStrength','н/д')} · "
             f"Сравнимых TH: {m.get('townHallPeers','н/д')}",
+            f"Сила для {mode}: {m.get('combatStrength', 'н/д')}",
             f"Участие в КВ/ЛВК (CoC): {pref}",
             f"Последний вход: {last}",
             f"Обычные КВ: {hist.get('wars', 0)} войн · {hist.get('attacksUsed', 0)}/{hist.get('attacksPossible', 0)} атак",
@@ -266,6 +290,7 @@ def lineup_message(data: dict, stage: str = "main", page: int = 0) -> str:
         return header + "\nВыбери игрока. Каждая запись содержит свою статистику КВ/ЛВК."
     titles = {
         "main": "✅ Рекомендуемый состав", "bench": "🪑 Запасные",
+        "ranking": "📊 Рейтинг всего клана",
         "inactive": "🕒 По ручной отметке не заходили 48+ часов",
         "optout": "🚫 Красная отметка: отказались от КВ/ЛВК",
         "needs_review": "❔ Нет достоверного игрового согласия",
@@ -275,7 +300,8 @@ def lineup_message(data: dict, stage: str = "main", page: int = 0) -> str:
         "promotion": "📈 Кандидаты на повышение по вкладу в клан",
         "bonus": "🎖 Кандидаты на бонус ЛВК",
     }
-    subset = categories.get(stage) or []
+    subset = (data.get("clanRanking") or []) if stage == "ranking" else categories.get(stage) or []
+    offset = max(0, min(page, max(0, (len(subset) - 1) // 15))) * 15
     rows = [header, f"<b>{titles.get(stage,'Рейтинг')}</b> · {len(subset)}"]
     if not subset:
         rows.append("Пока нет подтверждённых кандидатов либо ещё недостаточно истории.")
@@ -283,21 +309,25 @@ def lineup_message(data: dict, stage: str = "main", page: int = 0) -> str:
             rows.append("Список определяется по ручной отметке руководителя, НЕ по API.")
         if stage == "bonus":
             rows.append("Нужны завершённые раунды ЛВК с сохранёнными атаками. Пустой список не ошибка.")
-    for i, p in enumerate(subset[:20], 1):
+    for i, p in enumerate(subset[offset:offset + 15], offset + 1):
         label = html.escape(str(p.get("name") or "?")[:35])
         rank = p.get("selectionScore")
         display = f"{rank:.1f}" if isinstance(rank, (int,float)) else "н/д"
-        hist = p.get("history") or {}
+        hist = (p.get("cwlHistory") if data.get("mode") == "cwl" else p.get("history")) or {}
         observed = f"{hist['wars']} войн" if hist.get("wars") else "без истории"
         rows.append(f"{i}. <b>{label}</b> · TH{p.get('townHallLevel') or '?'} · {display} · {observed}")
+        if stage == "ranking":
+            state = {"candidate": "допущен", "optout": "отказ", "inactive": "48+ ч",
+                     "cwl_excluded": "пропуск ЛВК", "needs_review": "уточнить"}.get(p.get("eligibility"), "уточнить")
+            rows.append(f"   Ур. {p.get('expLevel') or '?'} · {state}")
         if stage == "promotion":
             contrib = p.get("contributionScore") or {}
             rows.append(f"   ↳ Вклад: {contrib.get('score','н/д')} · донат: {p.get('donations',0)}"
                         f" · рейды: {p.get('raidLoot') if p.get('raidLoot') is not None else 'н/д'}")
         if stage in {"kick","inactive","cwl_excluded"}:
             rows.extend("   ↳ " + html.escape(str(x)[:120]) for x in (p.get("reasons") or [])[:2])
-    if len(subset) > 20:
-        rows.append(f"… ещё {len(subset) - 20}")
+    if len(subset) > 15:
+        rows.append(f"Страница {offset // 15 + 1}/{(len(subset) + 14) // 15}")
     rows.append("\nℹ️ Только рекомендации руководству, не автоматические действия.")
     return "\n".join(rows)[:4000]
 
@@ -308,12 +338,25 @@ def format_cwl_message(data: dict) -> str:
         return "🏆 <b>Лига клановых войн</b>\nСейчас нет доступных раундов CWL."
     lines = ["🏆 <b>Лига клановых войн · CWL</b>",
              f"Раундов в группе: {data.get('scheduledRounds', '?')}",
-             f"Доступно наших войн: {data.get('observedRounds', 0)}",
+             f"Доступно наших войн: {data.get('observedRounds', 0)} / 7",
+             f"⭐ Всего наших звёзд: {data.get('totalStars', 0)} "
+             f"(атаки {data.get('attackStars', 0)} + бонус {data.get('winBonus', 0)})",
+             f"Место сейчас по общим звёздам: {data.get('currentPlace') or 'нет данных'}" +
+             (" (предварительно, неполные данные)" if not data.get('standingsComplete') else ""),
              f"✅ {data.get('wins', 0)} побед · 🤝 {data.get('draws', 0)} ничьих · ❌ {data.get('losses', 0)} поражений",
              ""]
+    table = data.get("standings") or []
+    if table:
+        lines.append("<b>Таблица по общим звёздам</b>")
+        for row in table:
+            lines.append(f"{row['place']}. {html.escape(str(row['name'])[:40])} · ⭐ {row['stars']} · Σ {row.get('destruction', 0):.1f}%")
+        lines.append("Звёзды атак + 10 за завершённую победу. При равенстве — суммарное разрушение; полный паритет даёт общее место.")
+        if not data.get("standingsComplete"):
+            lines.append(f"⚠️ Неполные данные результатов или разрушения. Не загружено войн: {data.get('missingWars', '?')}. Место предварительное.")
+        lines.append("")
     results = {"win": "✅ Победа", "draw": "🤝 Ничья", "loss": "❌ Поражение", "pending": "⏳ Не завершена"}
     for index, war in enumerate(rounds[-10:], start=max(1, len(rounds) - 9)):
         lines.append(f"<b>{index}. {html.escape(str(war.get('enemy') or '?'))}</b> · {results.get(war.get('result'), '⏳')}")
         lines.append(f"⭐ {war.get('stars', 0)} : {war.get('enemyStars', 0)} · {game_time(war.get('startTime'))}")
-    lines.append("\nℹ️ Результаты наблюдаемых войн, не официальная таблица мест CWL.")
+    lines.append("\nℹ️ Расчёт по наблюдаемым звёздам — не официальная таблица мест CWL. Незавершённые войны могут изменить место.")
     return "\n".join(lines)[:4000]

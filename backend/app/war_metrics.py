@@ -14,6 +14,13 @@ LEAGUE_ORDER = {
 
 def _league_index(name: str) -> float | None:
     lower = (name or "").lower()
+    # Current ranked leagues carry a global tier number (e.g. Electro League 32).
+    if "legend" in lower:
+        tier = re.search(r"\b(iii|ii|i)\b", lower)
+        return {"iii": 34., "ii": 35., "i": 36.}.get(tier.group(1), 34.) if tier else 34.
+    numeric_tier = re.search(r"\b(\d+)\s*$", lower)
+    if numeric_tier:
+        return float(numeric_tier.group(1))
     for league, level in LEAGUE_ORDER.items():
         if league in lower:
             tier = re.search(r"\b(i{1,3}|iv|v)\b", lower)
@@ -31,7 +38,7 @@ def _peer_percentile(value: float | None, cohort: list[float]) -> float | None:
 
 
 def relative_strength(players: list[dict[str, Any]]) -> dict[str, dict]:
-    """TH-matched player-level/equipment/league percentiles within this clan.
+    """TH-matched experience/hero/equipment/league percentiles within this clan.
 
     The API provides no building levels. One-person TH cohorts have no defensible
     relative ranking: keep 50 neutral and mark the source/coverage.
@@ -42,14 +49,17 @@ def relative_strength(players: list[dict[str, Any]]) -> dict[str, dict]:
             cohorts[int(member.get("townHallLevel") or 0)].append(member)
     out = {}
     for members in cohorts.values():
+        experience = [float(p["expLevel"]) for p in members if isinstance(p.get("expLevel"), (int, float))]
         heroes = [float(p["heroesLevel"]) for p in members if isinstance(p.get("heroesLevel"), (int, float))]
         equipment = [float(p["heroEquipmentScore"]) for p in members if isinstance(p.get("heroEquipmentScore"), (int, float))]
         leagues = [x for p in members if (x := _league_index(str(p.get("league") or ""))) is not None]
         for player in members:
             pairs = (
-                (70, _peer_percentile(float(player["heroesLevel"]), heroes)
+                (35, _peer_percentile(float(player["expLevel"]), experience)
+                 if isinstance(player.get("expLevel"), (int, float)) else None),
+                (40, _peer_percentile(float(player["heroesLevel"]), heroes)
                  if isinstance(player.get("heroesLevel"), (int, float)) else None),
-                (20, _peer_percentile(float(player["heroEquipmentScore"]), equipment)
+                (15, _peer_percentile(float(player["heroEquipmentScore"]), equipment)
                  if isinstance(player.get("heroEquipmentScore"), (int, float)) else None),
                 (10, _peer_percentile(_league_index(str(player.get("league") or "")), leagues)),
             )
@@ -59,7 +69,7 @@ def relative_strength(players: list[dict[str, Any]]) -> dict[str, dict]:
                 "relativeStrength": score,
                 "strengthCoverage": sum(weight for weight, _ in known),
                 "townHallPeers": len(members),
-                "method": "TH-matched clan peers; 70% heroes, 20% equipment, 10% league",
+                "method": "TH-matched clan peers; 35% experience, 40% heroes, 15% equipment, 10% league",
             }
     return out
 

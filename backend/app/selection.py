@@ -19,7 +19,7 @@ DEFAULT_WEIGHTS = {
 }
 MODE_WEIGHTS = {
     "war": {"strength": 20.0, "discipline": 35.0, "quality": 35.0, "role": 10.0},
-    "cwl": {"strength": 20.0, "discipline": 35.0, "quality": 40.0, "role": 5.0},
+    "cwl": {"strength": 55.0, "discipline": 20.0, "quality": 20.0, "role": 5.0},
 }
 ROLE_SCORE = {"leader": 100.0, "coLeader": 85.0, "admin": 65.0, "member": 50.0}
 PREFS = ("in", "out", "unknown")
@@ -61,6 +61,16 @@ class SelectionStore:
             for mode, values in MODE_WEIGHTS.items():
                 conn.executemany("INSERT OR IGNORE INTO mode_weights VALUES(?,?,?)",
                                  [(mode, metric, value) for metric, value in values.items()])
+
+            # Migrate only the previous defaults, once. Preserve customized weights.
+            conn.execute("CREATE TABLE IF NOT EXISTS policy_migrations (name TEXT PRIMARY KEY)")
+            migration = "cwl_absolute_strength_v1"
+            if not conn.execute("SELECT 1 FROM policy_migrations WHERE name=?", (migration,)).fetchone():
+                current = dict(conn.execute("SELECT metric,value FROM mode_weights WHERE mode='cwl'"))
+                if current == {"strength": 20., "discipline": 35., "quality": 40., "role": 5.}:
+                    conn.executemany("UPDATE mode_weights SET value=? WHERE mode='cwl' AND metric=?",
+                                     [(v, k) for k, v in MODE_WEIGHTS["cwl"].items()])
+                conn.execute("INSERT INTO policy_migrations VALUES(?)", (migration,))
 
     def weights(self, mode: str | None = None) -> dict[str, float]:
         with sqlite3.connect(self.path, timeout=10) as conn:
@@ -139,6 +149,10 @@ def score_and_categorize(
     """Independent scoring for KV and CWL. Participation and bans are HARD gates."""
     if mode not in MODE_WEIGHTS:
         raise ValueError("mode must be war or cwl")
+    if mode == "cwl":
+        size = 15
+    elif size not in range(5, 51, 5):
+        raise ValueError("war size must be 5..50 in steps of 5")
     now = now or utc_now()
     if now.tzinfo is None:
         raise ValueError("now must be timezone-aware")
@@ -147,6 +161,7 @@ def score_and_categorize(
         # but real runtime always passes mode-specific weights.
         weights = dict(MODE_WEIGHTS[mode])
     strength_data = relative_strength(ranking)
+    max_th = max(18, max((int(p.get("townHallLevel") or 0) for p in ranking), default=18))
     max_donations = max((int(m.get("donations") or 0) for m in ranking), default=0)
     max_raid = max((int(m.get("raidLoot") or 0) for m in ranking), default=0)
     groups = {x: [] for x in ("main","bench","inactive","optout","needs_review",
@@ -171,8 +186,12 @@ def score_and_categorize(
         def cautious(value: float | None) -> float:
             return round((min(100., max(0., float(value))) * count + 50 * 3)
                          / (count + 3), 1) if value is not None else 50.0
+        th = int(p.get("townHallLevel") or 0)
+        th_strength = round(100 * (max(0, min(th, max_th)) / max_th) ** 3, 1) if th else 50.
+        combat_strength = (round(.8 * th_strength + .2 * strength["relativeStrength"], 1)
+                           if mode == "cwl" else strength["relativeStrength"])
         components = {
-            "strength": strength["relativeStrength"],
+            "strength": combat_strength,
             "discipline": cautious(attendance),
             "quality": cautious(quality),
             "role": ROLE_SCORE.get(p.get("role"), 50.0),
@@ -204,6 +223,7 @@ def score_and_categorize(
         p.update({
             "selectionScore": score, "scoreWeights": dict(weights),
             "scoreComponents": components, "relativeStrength": strength["relativeStrength"],
+            "townHallStrength": th_strength, "combatStrength": combat_strength,
             "strengthCoverage": strength["strengthCoverage"],
             "townHallPeers": strength["townHallPeers"],
             "confidence": "high" if count >= 5 and strength["strengthCoverage"] > 0 else
@@ -248,7 +268,12 @@ def score_and_categorize(
     groups["kick"].sort(key=lambda p: (p["selectionScore"], p.get("name") or ""))
     groups["promotion"].sort(key=lambda p: -(p["contributionScore"].get("score") or 0))
     groups["bonus"].sort(key=lambda p: -(p.get("cwlHistory", {}).get("qualityPct") or 0))
+    rating = sorted(full, key=lambda p: (-p["selectionScore"], -int(p.get("townHallLevel") or 0),
+                                          str(p.get("tag") or "")))
+    for place, p in enumerate(rating, 1):
+        p["clanRank"] = place
     return {
+        "clanRanking": rating, "lineupSize": size,
         "mode": mode, "weights": dict(weights), "categories": groups,
         "recommendedLineup": full, "recommendedSize": min(size, len(groups["main"])),
         "allPlayers": full,
