@@ -355,9 +355,11 @@ async def get_next_war_analysis(
     members = clan_data.get("memberList", [])
     clan_tag = normalize_tag(settings.coc_clan_tag)
     history_stats = summarize_wars(history.completed(20), clan_tag) if history else {}
+    suggested_size = 15
     try:
         war_data = await get_war(client, redis)
         current_state = war_data.get("state", "unknown")
+        suggested_size = max(5, min(50, int(war_data.get("teamSize") or 15)))
     except (NotFoundError, ForbiddenError, RateLimitError, RuntimeError, TimeoutError):
         current_state = "unavailable"
     try:
@@ -429,6 +431,7 @@ async def get_next_war_analysis(
         "cwlState": cwl_state,
         "currentWarState": current_state,
         "recommendedLineup": ranking,
+        "recommendedSize": suggested_size,
         "topTen": ranking[:10],
         "historyKnown": bool(history_stats),
         "observedWarCount": len(history.completed(20)) if history else 0,
