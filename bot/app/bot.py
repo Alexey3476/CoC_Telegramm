@@ -390,7 +390,7 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
         return
     
     # Skip if user is waiting for tag input (capture_tag will handle it)
-    if context.user_data.get("awaiting_tag"):
+    if context.user_data.get("awaiting_tag") or context.user_data.get("awaiting_player_token"):
         return
     
     # Skip if user is already bound
@@ -610,6 +610,7 @@ async def process_binding(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     raw_tag: str,
+    verified: bool = False,
 ) -> None:
     if not update.effective_user or not update.message:
         return
@@ -682,7 +683,24 @@ async def process_binding(
         except InvalidTagError:
             await update.message.reply_text("Player is not in this clan.")
             return
+    if settings.require_player_verification and not verified:
+        context.user_data["pending_coc_tag"] = tag
+        context.user_data["awaiting_player_token"] = True
+        await update.message.reply_text(
+            "🔐 Для проверки владения аккаунтом открой Clash of Clans → "
+            "Настройки → Ещё настройки → API Token и пришли токен игрока сюда.\n"
+            "Это НЕ ключ разработчика. Сообщение с токеном бот попытается удалить.",
+            reply_markup=bind_cancel_keyboard(),
+        )
+        return
+
     storage: BindingsStorage = context.application.bot_data["storage"]
+    owner_id = storage.get_user_id_by_tag(settings.clan_group_id or 0, tag)
+    if owner_id is not None and owner_id != update.effective_user.id:
+        await update.message.reply_text(
+            "Игровой аккаунт уже привязан к другому пользователю. Обратитесь к администратору."
+        )
+        return
     now = datetime.now(timezone.utc).isoformat()
     binding = Binding(
         telegram_user_id=update.effective_user.id,
@@ -853,6 +871,8 @@ async def bind_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     try:
         await update.callback_query.answer()
         context.user_data.pop("awaiting_tag", None)
+        context.user_data.pop("awaiting_player_token", None)
+        context.user_data.pop("pending_coc_tag", None)
         await update.callback_query.edit_message_text("Binding cancelled.")
     except Exception:  # noqa: BLE001
         logger.exception("Failed to handle bind_cancel callback")
@@ -862,6 +882,9 @@ async def capture_tag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not update.message or not update.effective_user:
         return
     if not ensure_private_chat(update):
+        return
+    if context.user_data.get("awaiting_player_token"):
+        await verify_player_ownership(update, context)
         return
     if not context.user_data.get("awaiting_tag"):
         return
@@ -886,6 +909,51 @@ async def capture_tag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             "Unexpected error occurred. Please try again.",
             reply_markup=bind_cancel_keyboard(),
         )
+
+
+async def verify_player_ownership(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Verify an in-game player token and never persist it."""
+    if not update.message or not update.effective_chat:
+        return
+    tag = context.user_data.get("pending_coc_tag")
+    if not tag:
+        context.user_data.pop("awaiting_player_token", None)
+        await update.message.reply_text("Сессия привязки истекла. Отправьте /bind.")
+        return
+    player_token = (update.message.text or "").strip()
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+    if not player_token or len(player_token) > 256:
+        await context.bot.send_message(update.effective_chat.id, "Неверный формат токена.")
+        return
+    try:
+        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+            response = await client.post(
+                build_url(f"/verify-player/{encode_tag(tag)}"),
+                json={"token": player_token},
+            )
+            response.raise_for_status()
+            valid = response.json().get("verified") is True
+    except httpx.HTTPStatusError as exc:
+        logger.warning("Player verification failed: HTTP %s", exc.response.status_code)
+        await context.bot.send_message(update.effective_chat.id, "Ошибка проверки игрока. Повторите позже.")
+        return
+    except httpx.RequestError:
+        logger.warning("Player verification service unreachable")
+        await context.bot.send_message(update.effective_chat.id, "Сервис проверки временно недоступен.")
+        return
+    finally:
+        player_token = None
+    if not valid:
+        await context.bot.send_message(
+            update.effective_chat.id, "❌ Токен не подходит выбранному игроку. Попробуйте ещё раз."
+        )
+        return
+    context.user_data.pop("awaiting_player_token", None)
+    context.user_data.pop("pending_coc_tag", None)
+    await process_binding(update, context, tag, verified=True)
 
 
 async def chatid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

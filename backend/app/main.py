@@ -4,6 +4,7 @@ from typing import AsyncIterator
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel, Field
 from app.cache import TTLCache
 
 from app.coc_client import (
@@ -21,6 +22,8 @@ from app.coc_client import (
     get_clan_games,
     get_player_activity,
     get_next_war_analysis,
+    normalize_tag,
+    encode_tag,
 )
 from app.settings import settings, validate_settings
 
@@ -270,3 +273,28 @@ async def next_war(request: Request):
         raise HTTPException(status_code=504, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+class PlayerVerificationRequest(BaseModel):
+    token: str = Field(min_length=1, max_length=256)
+
+
+@app.post("/verify-player/{tag}")
+async def verify_player(tag: str, body: PlayerVerificationRequest, request: Request):
+    """Verify the in-game player API token without logging or retaining it."""
+    try:
+        player_tag = normalize_tag(tag)
+    except InvalidTagError as exc:
+        raise HTTPException(status_code=400, detail="Invalid tag") from exc
+    client = get_http_client(request)
+    url = f"{settings.coc_api_base}/players/{encode_tag(player_tag)}/verifytoken"
+    try:
+        response = await client.post(url, json={"token": body.token})
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="CoC verification timed out") from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail="CoC verification unavailable") from exc
+    if response.status_code in (401, 403, 429):
+        raise HTTPException(status_code=response.status_code, detail="CoC rejected verification request")
+    if response.status_code != 200:
+        raise HTTPException(status_code=502, detail="CoC verification error")
+    return {"verified": response.json().get("status") == "ok"}

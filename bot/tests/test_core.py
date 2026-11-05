@@ -14,3 +14,8 @@ def test_attacks_used():
     assert attacks_used({"attacks": [{"stars": 2}]}) == 1
     assert attacks_used({"attacks": 2}) == 2
     assert attacks_used({}) == 0
+
+
+def test_player_token_setting_default():
+    from app.settings import Settings
+    assert Settings().require_player_verification is True

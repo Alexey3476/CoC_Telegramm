@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     clan_group_id: int | None = None
     invite_ttl_minutes: int = 10
     enforce_clan_membership: bool = False
+    require_player_verification: bool = True
     coc_clan_tag: str | None = None
     war_reminder_enabled: bool = True
     war_reminder_window_hours: int = 4
