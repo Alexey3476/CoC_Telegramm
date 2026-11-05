@@ -243,6 +243,9 @@ def summarize_cwl(group: dict[str, Any], wars: list[dict[str, Any]], clan_tag: s
         member["place"] = i
     ours = next((item for item in standings if item["tag"] == clan_tag), None)
     finished = sum(w.get("state") == "warEnded" for w in unique_wars)
+    known_tags = {tag for round_data in group_rounds for tag in round_data.get("warTags", [])
+                  if tag and tag != "#0"}
+    active_games = sum(w.get("state") in {"inWar", "warEnded"} for w in unique_wars)
     return {
         "state": group.get("state") or "notInWar",
         "scheduledRounds": expected_rounds,
@@ -252,12 +255,13 @@ def summarize_cwl(group: dict[str, Any], wars: list[dict[str, Any]], clan_tag: s
         "losses": sum(x["result"] == "loss" for x in observed),
         "rounds": rounds,
         "standings": standings,
-        "predictedPlace": ours["place"] if ours else None,
-        "ourTotalStars": ours["totalStars"] if ours else None,
+        "predictedPlace": ours["place"] if ours and active_games else None,
+        "ourTotalStars": ours["totalStars"] if ours and active_games else None,
         "completedWarCount": finished,
         "observedWarCount": len(unique_wars),
         "standingsProvisional": group.get("state") != "ended"
-                                or finished != len(unique_wars),
+                                or finished != len(unique_wars)
+                                or (bool(known_tags) and len(unique_wars) < len(known_tags)),
     }
 
 
