@@ -478,6 +478,7 @@ async def staff_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     data = context.user_data.get("lineup_snapshot")
     if not data or data.get("mode") != mode:
         context.user_data["lineup_mode"] = mode
+        context.user_data["lineup_target_stage"] = stage
         await next_war_analysis(update, context)
         return
     stage = "promotion" if stage == "promotion" else "bonus" if stage == "bonus" else "kick"
@@ -2026,9 +2027,12 @@ async def next_war_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             data = response.json()
         context.user_data["lineup_snapshot"] = data
         captain = await has_captain_access(update, context)
-        await msg.edit_text(
-            lineup_message(data), parse_mode=ParseMode.HTML,
-            reply_markup=lineup_keyboard(data=data, captain=captain),
+        stage = context.user_data.pop("lineup_target_stage", "main")
+        if stage in {"kick","promotion","bonus"} and not captain:
+            stage = "main"
+        await send_or_edit_message(
+            update, lineup_message(data, stage), parse_mode=ParseMode.HTML,
+            reply_markup=lineup_keyboard(stage, data=data, captain=captain),
         )
     except (httpx.HTTPStatusError, httpx.RequestError):
         logger.warning("Lineup backend unavailable")
@@ -2058,7 +2062,7 @@ async def lineup_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     snapshot = context.user_data.get("lineup_snapshot")
     if not snapshot:
-        await update.callback_query.edit_message_text(
+        await send_or_edit_message(update, 
             "Сессия устарела. Перезагрузи состав.",
             reply_markup=InlineKeyboardMarkup(
                 [[InlineKeyboardButton("🔄 Обновить", callback_data="menu_nextwar")]]
@@ -2067,13 +2071,13 @@ async def lineup_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     captain = await has_captain_access(update, context)
     if stage in {"kick", "promotion", "bonus"} and not captain:
-        await update.callback_query.edit_message_text(
+        await send_or_edit_message(update, 
             "Раздел руководства. Недостаточно прав.",
             reply_markup=back_keyboard(),
         )
         return
     page = max(0, min(50, int(page_raw)))
-    await update.callback_query.edit_message_text(
+    await send_or_edit_message(update, 
         lineup_message(snapshot, stage, page), parse_mode=ParseMode.HTML,
         reply_markup=lineup_keyboard(stage, page, snapshot, captain=captain),
     )

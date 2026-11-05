@@ -43,21 +43,26 @@ logger = logging.getLogger(__name__)
 async def collect_war_history(
     client: httpx.AsyncClient, cache: TTLCache, history: WarHistory
 ) -> None:
-    """Periodically save regular and CWL wars, including completed CWL rounds."""
+    """CWL collection must continue even if the ordinary-war endpoint fails."""
     while True:
         try:
             regular = await get_regular_war(client, cache)
-            if history.save({**regular, '_warKind': 'war'}):
+            if history.save({**regular, "_warKind": "war"}):
                 logger.info("Saved regular clan war snapshot")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Regular war unavailable; still collecting CWL")
+        try:
             _, cwl_wars = await get_league_wars(client, cache)
             for war in cwl_wars:
-                history.save({**war, '_warKind': 'cwl'})
+                history.save({**war, "_warKind": "cwl"})
             if cwl_wars:
                 logger.info("Reviewed %s CWL wars", len(cwl_wars))
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("War snapshot collection failed; will retry")
+            logger.warning("CWL collection unavailable; will retry")
         await asyncio.sleep(300)
 
 
