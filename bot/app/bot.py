@@ -837,8 +837,12 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             context.args = []  # Clear args to trigger binding lookup
             await player(update, context)
         elif callback_data == "menu_report":
-            # Send activity report for Lex
-            await update.callback_query.edit_message_text("📋 Отчет об активности клана отправляется...")
+            storage: BindingsStorage = context.application.bot_data["storage"]
+            binding = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
+            if not (binding and settings.lex_coc_tag and binding.coc_player_tag == settings.lex_coc_tag):
+                await update.callback_query.edit_message_text("Нет доступа к отчёту.")
+                return
+            await update.callback_query.edit_message_text("📋 Отчёт отправляется...")
             await send_activity_report_to_user(context, update.effective_user.id)
         else:
             await update.callback_query.edit_message_text("Неизвестная команда")
@@ -1517,12 +1521,10 @@ async def clan_games(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 async def ai_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Reply with AI-generated text when bot is mentioned or replied-to using Groq API or fallback."""
-    if not update.message or not update.message.text:
-        logger.debug("ai_reply_handler: no message or text")
+    if not update.message or not update.message.text or ensure_private_chat(update):
         return
 
     text = update.message.text
-    logger.debug(f"ai_reply_handler: processing text: {text[:100]}")
     
     # Detect if bot is mentioned
     bot_username = None
@@ -1555,7 +1557,7 @@ async def ai_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         logger.debug("ai_reply_handler: bot not mentioned, returning")
         return
 
-    logger.info(f"ai_reply_handler: attempting AI reply for text: {text[:100]}")
+    logger.info("AI reply requested in chat %s", update.effective_chat.id if update.effective_chat else "?")
     
     # Try Groq API (free, fast)
     groq_key = os.getenv("GROQ_API_KEY")
@@ -1617,67 +1619,56 @@ async def ai_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def next_war_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show next war lineup recommendations based on comprehensive player analysis."""
+    """Rank players transparently by observed war attendance and known battle strength."""
     if not update.callback_query and not update.message:
         return
-    
-    msg = None
+    msg = await send_or_edit_message(update, "⏳ Собираю состав и историю войн...", parse_mode=None)
     try:
-        msg = await send_or_edit_message(update, "⏳ Анализирую данные для следующей войны...")
-        
-        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
-            response = await client.get(f"{settings.backend_url}/next-war")
+        async with httpx.AsyncClient(timeout=max(45, settings.request_timeout_seconds)) as client:
+            response = await client.get(build_url("/next-war"))
             response.raise_for_status()
             data = response.json()
-        
-        clan_name = data.get("clanName", "Клан")
-        cwl_state = data.get("cwlState", "unknown")
-        war_state = data.get("currentWarState", "unknown")
-        recommended = data.get("topTen", [])
-        
-        msg_text = f"⚔️ *Рекомендуемый состав для следующей войны*\n"
-        msg_text += f"`{clan_name}`\n\n"
-        msg_text += f"📋 Состояние войны: `{war_state}`\n"
-        msg_text += f"🏆 Лига войн: `{cwl_state}`\n\n"
-        msg_text += "🎯 *Топ 10 рекомендуемых игроков:*\n\n"
-        
-        for i, player in enumerate(recommended, 1):
-            name = player.get("name", "Unknown")
-            th = player.get("townHallLevel", 0)
-            league = player.get("league", "Unranked")
-            war_ready = player.get("warReadiness", 0)
-            last_stars = player.get("lastWarStars", 0)
-            last_dest = player.get("lastWarDestruction", 0)
-            equipment_score = player.get("heroEquipmentScore", 0)
-            heroes_level = player.get("heroesLevel", 0)
-            war_stars = player.get("warStars", 0)
-            exp_level = player.get("expLevel", 0)
-            
-            # Build player info with all requested metrics
-            msg_text += f"{i}. *{name}*\n"
-            msg_text += f"   TH: {th} | Опыт: {exp_level}\n"
-            msg_text += f"   Лига: {league}\n"
-            msg_text += f"   ⭐ Звёзды: {war_stars} | 💪 Героев: {heroes_level}\n"
-            msg_text += f"   🛡️ Снаряжение: {equipment_score}\n"
-            msg_text += f"   Прошлая война: ⭐{last_stars} | 💥{last_dest}%\n"
-            msg_text += f"   Готовность: {war_ready:.0f}\n\n"
-        
-        analysis = data.get("analysisFactors", {})
-        msg_text += "📊 *Факторы анализа:*\n"
-        msg_text += f"• {analysis.get('lastWarPerformance', '')}\n"
-        msg_text += f"• {analysis.get('combatReadiness', '')}\n"
-        msg_text += f"• Сортировка: {analysis.get('sortedBy', '')}\n"
-        
-        await msg.edit_text(msg_text, parse_mode=ParseMode.MARKDOWN)
-    except httpx.HTTPStatusError as exc:
-        logger.warning("Backend error: %s", exc)
-        await send_or_edit_message(update, "ℹ️ Анализ для следующей войны недоступен.")
-    except httpx.RequestError as exc:
-        logger.warning("Backend unreachable: %s", exc)
-        await send_or_edit_message(update, "Backend is unreachable.")
-    except Exception:  # noqa: BLE001
-        logger.exception("Unhandled error in next_war_analysis")
-        await send_or_edit_message(update, "Unexpected error occurred.")
+        rows = [
+            "⚔️ Рекомендации на следующую войну",
+            str(data.get("clanName") or "Клан"),
+            f"Статус: {data.get('currentWarState', 'unknown')}; CWL: {data.get('cwlState', 'unknown')}",
+            f"История: {data.get('observedWarCount', 0)} завершённых войн в локальной базе",
+        ]
+        if not data.get("historyKnown"):
+            rows.append("⚠️ Реальных прошлых атак ещё нет. Сейчас оценка только по силе, НЕ по надёжности.")
+        rows.append("")
+        for index, player_data in enumerate(data.get("topTen", []), start=1):
+            name = str(player_data.get("name") or "Unknown")
+            th = player_data.get("townHallLevel") or "?"
+            score = player_data.get("warReadiness")
+            history = player_data.get("history")
+            pref = player_data.get("warPreference")
+            rows.append(f"{index}. {name} | TH{th} | индекс {score} | заявка: {pref}")
+            if history:
+                reliability = history.get("reliabilityPct")
+                missed = history.get("missedAttacks")
+                average = history.get("averageStars")
+                triples = history.get("threeStarsEqualOrHigher", 0)
+                downhits = history.get("threeStarsDownhill", 0)
+                rows.append(
+                    f"   Войн {history.get('wars')}, использовано {reliability}% атак, "
+                    f"пропусков {missed}, ⭐/атаку {average if average is not None else 'н/д'}"
+                )
+                rows.append(f"   Триплы по равным/сильнее: {triples}; по слабее: {downhits}")
+            else:
+                rows.append("   Данных об атаках пока нет")
+        rows.extend([
+            "",
+            "Методика: учитываются пропуски, уровень цели и сила аккаунта.",
+            "Это подсказка для капитана, а не гарантированный прогноз результата.",
+        ])
+        await msg.edit_text("\n".join(rows)[:3950], parse_mode=None)
+    except (httpx.HTTPStatusError, httpx.RequestError):
+        logger.exception("Next-war analysis API error")
+        await msg.edit_text("Анализ пока недоступен. Проверьте подключение к CoC API.")
+    except Exception:
+        logger.exception("Next-war analysis failed")
+        await msg.edit_text("Ошибка анализа. Подробности в логах аддона.")
 
 
 async def main() -> None:
@@ -1711,6 +1702,9 @@ async def main() -> None:
     application.add_handler(CommandHandler("topplayers", top_players))
     application.add_handler(CommandHandler("player", player))
     application.add_handler(CommandHandler("war", war))
+    application.add_handler(CommandHandler("nextwar", next_war_analysis))
+    application.add_handler(CommandHandler("raids", clan_raids))
+    application.add_handler(CommandHandler("games", clan_games))
     application.add_handler(CommandHandler("ping", ping))
     application.add_handler(CommandHandler("bind", bind))
     application.add_handler(CommandHandler("unbind", unbind))
