@@ -15,7 +15,9 @@ def group():
 
 
 def test_all_clans_ranked_with_win_bonus_and_tiebreaker():
-    board = group_standings(group(),
+    g = group()
+    g["state"] = "ended"
+    board = group_standings(g,
                             [war("#W1"), war("#W2","#C","#D",(40,30)),
                              war("#W3","#B","#D",(38,20))], "#A")
     assert board["myPlace"] == 4
