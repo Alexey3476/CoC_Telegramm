@@ -25,7 +25,8 @@ from telegram.helpers import escape_markdown
 from app.backend_client import build_url, fetch_json
 from app.bindings_storage import Binding, BindingsStorage
 from app.settings import env_snapshot, settings, settings_snapshot, validate_settings
-from app.ui import format_war_message, format_raid_message, lineup_message, lineup_keyboard, safe_tag_name, normalize_name
+from app.ui import format_war_message, format_raid_message, lineup_message, lineup_keyboard, safe_tag_name
+from app.binding_ui import sorted_roster, roster_keyboard
 
 log_level = logging.DEBUG if settings.debug else logging.INFO
 logging.basicConfig(level=log_level, format="%(levelname)s %(name)s %(message)s")
@@ -572,23 +573,75 @@ async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def bind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.effective_user:
         return
-    try:
-        if not ensure_private_chat(update):
-            await update.message.reply_text("Please use /bind in a private chat with the bot.")
-            return
-        if not context.args:
-            await update.message.reply_text(
-                "Send your player tag (e.g. #2PRGP0L22).",
-                reply_markup=bind_cancel_keyboard(),
-            )
-            context.user_data["awaiting_tag"] = True
-            return
-        raw_tag = " ".join(context.args)
-    except Exception:  # noqa: BLE001
-        logger.exception("Failed to handle /bind")
-        await update.message.reply_text("Unexpected error occurred. Please try again.")
+    if not ensure_private_chat(update):
+        await update.message.reply_text("Привязка доступна только в личном чате.")
         return
-    await process_binding(update, context, raw_tag)
+    if context.args:
+        await process_binding(update, context, " ".join(context.args))
+    else:
+        await show_player_picker(update, context)
+
+
+async def show_player_picker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Select from the real clan roster; verification is still mandatory."""
+    if not ensure_private_chat(update) or not update.effective_user:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+            clan_data = await fetch_json(client, "/clan")
+        members = sorted_roster(
+            clan_data.get("memberList") or [],
+            update.effective_user.full_name,
+            update.effective_user.username or "",
+        )
+        if not members:
+            raise ValueError("empty member list")
+        context.user_data["picker_members"] = members
+        context.user_data["awaiting_tag"] = False
+        await send_or_edit_message(
+            update,
+            "🔐 <b>Выбери свой аккаунт</b>\n"
+            "Это список участников клана. Первый вариант может совпадать с твоим именем Telegram.\n"
+            "Выбор ника НЕ является доказательством владения аккаунтом.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=roster_keyboard(members),
+        )
+    except (httpx.HTTPStatusError, httpx.RequestError, ValueError):
+        logger.warning("Clan roster unavailable for binding picker")
+        context.user_data["awaiting_tag"] = True
+        await send_or_edit_message(update, "Введи свой тег игрока, например #VU099JCR.",
+                                   parse_mode=None, reply_markup=bind_cancel_keyboard())
+
+
+async def roster_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.callback_query or not ensure_private_chat(update):
+        return
+    await update.callback_query.answer()
+    command = update.callback_query.data or ""
+    parts = command.split(":")
+    if len(parts) != 3:
+        return
+    kind, index_str = parts[1:]
+    idx = int(index_str)
+    if kind == "manual":
+        context.user_data["awaiting_tag"] = True
+        await update.callback_query.edit_message_text(
+            "✍️ Введи игровой тег, например #VU099JCR.",
+            reply_markup=bind_cancel_keyboard())
+        return
+    members = context.user_data.get("picker_members") or []
+    if not members:
+        await update.callback_query.edit_message_text("Список устарел. Введи /bind.")
+        return
+    if kind == "page":
+        await update.callback_query.edit_message_reply_markup(reply_markup=roster_keyboard(members, idx))
+        return
+    if kind != "player" or not 0 <= idx < len(members):
+        return
+    member = members[idx]
+    await update.callback_query.edit_message_text(
+        f"Выбран {member.get('name', '?')} · {member['tag']}. Проверяю аккаунт...")
+    await process_binding(update, context, str(member["tag"]))
 
 
 async def process_binding(
@@ -821,22 +874,13 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def bind_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.callback_query or not update.effective_user:
+    if not update.callback_query:
         return
-    try:
-        await update.callback_query.answer()
-        if not ensure_private_chat(update):
-            await update.callback_query.edit_message_text(
-                "Please use /bind in a private chat with the bot."
-            )
-            return
-        context.user_data["awaiting_tag"] = True
-        await update.callback_query.edit_message_text(
-            "Send your player tag (e.g. #2PRGP0L22).",
-            reply_markup=bind_cancel_keyboard(),
-        )
-    except Exception:  # noqa: BLE001
-        logger.exception("Failed to handle bind_start callback")
+    await update.callback_query.answer()
+    if not ensure_private_chat(update):
+        await update.callback_query.edit_message_text("Привязка доступна в личном чате бота.")
+        return
+    await show_player_picker(update, context)
 
 
 async def bind_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -847,7 +891,8 @@ async def bind_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         context.user_data.pop("awaiting_tag", None)
         context.user_data.pop("awaiting_player_token", None)
         context.user_data.pop("pending_coc_tag", None)
-        await update.callback_query.edit_message_text("Binding cancelled.")
+        context.user_data.pop("picker_members", None)
+        await update.callback_query.edit_message_text("Привязка отменена.")
     except Exception:  # noqa: BLE001
         logger.exception("Failed to handle bind_cancel callback")
 
@@ -1631,6 +1676,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("settings", settings_info))
     application.add_handler(CallbackQueryHandler(bind_start, pattern="^bind_start$"))
     application.add_handler(CallbackQueryHandler(bind_cancel, pattern="^bind_cancel$"))
+    application.add_handler(CallbackQueryHandler(roster_callback, pattern=r"^pick:(manual|page|player):[0-9]+$"))
     application.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
     application.add_handler(CallbackQueryHandler(lineup_callback, pattern=r"^lineup:(main|bench|details|about|player|refresh):[0-9]+$"))
     
