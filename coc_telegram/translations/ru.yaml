@@ -1,0 +1,27 @@
+configuration:
+  telegram_bot_token:
+    name: Токен Telegram-бота
+  coc_token:
+    name: Ключ API Clash of Clans
+  coc_clan_tag:
+    name: Тег клана
+  clan_group_id:
+    name: ID группы Telegram
+  invite_ttl_minutes:
+    name: Время приглашения (мин)
+  enforce_clan_membership:
+    name: Только игроки клана
+  require_player_verification:
+    name: Проверять владение игровым аккаунтом
+  war_reminder_enabled:
+    name: Напоминать об атаках
+  war_reminder_window_hours:
+    name: Окно напоминаний (часы)
+  war_reminder_interval_minutes:
+    name: Частота напоминаний (мин)
+  cache_ttl_seconds:
+    name: Кеш API (сек)
+  request_timeout_seconds:
+    name: Тайм-аут запроса (сек)
+  debug:
+    name: Отладочный журнал

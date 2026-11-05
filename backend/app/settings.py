@@ -5,7 +5,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 REQUIRED_SETTINGS = {
     "COC_TOKEN": "coc_token",
     "COC_CLAN_TAG": "coc_clan_tag",
-    "REDIS_URL": "redis_url",
 }
 
 
@@ -14,10 +13,9 @@ class Settings(BaseSettings):
 
     coc_token: str | None = None
     coc_clan_tag: str | None = None
-    redis_url: str = "redis://redis:6379/0"
     cache_ttl_seconds: int = 300
     request_timeout_seconds: int = 30
-    debug: bool = True
+    debug: bool = False
     coc_api_base: str = "https://api.clashofclans.com/v1"
 
 

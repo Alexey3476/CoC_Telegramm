@@ -1,0 +1,66 @@
+name: CoC Home Assistant add-on
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "bot/**"
+      - "coc_telegram/**"
+      - "deploy/Dockerfile.addon"
+      - ".github/workflows/coc-addon.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - "bot/**"
+      - "coc_telegram/**"
+      - "deploy/Dockerfile.addon"
+      - ".github/workflows/coc-addon.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r backend/requirements.txt -r bot/requirements.txt pytest
+      - run: python -m compileall -q backend bot coc_telegram
+      - run: PYTHONPATH=backend python -m pytest backend/tests -q
+      - run: PYTHONPATH=bot python -m pytest bot/tests -q
+      - run: PYTHONPATH=. python -m pytest coc_telegram/tests -q
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Read add-on version
+        id: version
+        shell: bash
+        run: echo "version=$(awk -F'\"' '/^version:/ {print $2}' coc_telegram/config.yaml)" >> "$GITHUB_OUTPUT"
+      - name: Login to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile.addon
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          build-args: |
+            BUILD_VERSION=${{ steps.version.outputs.version }}
+          tags: |
+            ghcr.io/alexey3476/coc-telegram:${{ steps.version.outputs.version }}
+            ghcr.io/alexey3476/coc-telegram:latest
