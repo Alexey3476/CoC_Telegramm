@@ -18,6 +18,7 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
     MessageHandler,
+    PollAnswerHandler,
     filters,
 )
 from telegram.helpers import escape_markdown
@@ -35,6 +36,7 @@ from app.ranking_ui import ranking_page, ranking_keyboard
 from app.profile_ui import (profile_text, profile_keyboard, detail_text, detail_keyboard,
                             delete_keyboard, progress_text, progress_keyboard)
 from app.war_results import WarAnnouncementStore, classify_result, format_result, recently_finished, war_identity
+from app.clan_poll import ClanPollStore
 
 log_level = logging.DEBUG if settings.debug else logging.INFO
 logging.basicConfig(level=log_level, format="%(levelname)s %(name)s %(message)s")
@@ -306,6 +308,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/unlink #ТЕГ — удалить одну привязку\n"
         "/weights — таблица весов\n"
         "/staff — меню главы и соруководителей\n"
+        "/deputyvote #ТЕГ1 #ТЕГ2 — опрос о замглавы (руководство)\n"
+        "/deputyresults, /deputyclose — результаты и завершение\n"
         "/lastseen, /setweight, /adminunlink — для руководства\n"
         "/grouplink — получить приглашение\n"
         "/unbind confirm — отвязать все аккаунты\n"
@@ -456,6 +460,7 @@ async def staff(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
          InlineKeyboardButton("📊 Отчёт", callback_data="menu_captain")],
         [InlineKeyboardButton("⚖️ Веса", callback_data="menu_weights"),
          InlineKeyboardButton("👥 Привязки", callback_data="menu_accounts")],
+        [InlineKeyboardButton("🗳️ Голосование о замглавы", callback_data="staff:poll")],
         [InlineKeyboardButton("🏠 Штаб", callback_data="menu_home")],
     ]
     await send_or_edit_message(
@@ -478,6 +483,10 @@ async def staff_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await send_or_edit_message(update, "Недостаточно прав CoC.")
         return
     stage = (update.callback_query.data or "staff:kick").split(":")[1]
+    if stage == "poll":
+        context.args = []
+        await deputy_vote(update, context)
+        return
     mode = "cwl" if stage == "bonus" else context.user_data.get("lineup_mode", "war")
     data = context.user_data.get("lineup_snapshot")
     if not data or data.get("mode") != mode:
@@ -502,6 +511,153 @@ async def captain_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await send_or_edit_message(update, captain_report_text(data), parse_mode=ParseMode.HTML)
     except (httpx.RequestError, httpx.HTTPStatusError):
         await send_or_edit_message(update, "Не удалось собрать отчёт.")
+
+
+async def deputy_vote(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Leader-created group poll; only one vote per verified CoC player owner."""
+    if not ensure_private_chat(update) or not update.effective_user:
+        return
+    if not await has_captain_access(update, context):
+        await send_or_edit_message(update, "Голосование создаёт только глава или соруководитель CoC.")
+        return
+    if not settings.clan_group_id:
+        await send_or_edit_message(update, "Укажи Telegram group chat ID в аддоне.")
+        return
+    if len(context.args) < 2 or len(context.args) > 10:
+        await send_or_edit_message(
+            update, "🗳️ <b>Опрос о заместителе главы</b>\n"
+            "Выбери от 2 до 10 кандидатов по игровым тегам:\n"
+            "<code>/deputyvote #ТЕГ1 #ТЕГ2</code>\n\n"
+            "Один голос на человека, даже если у него несколько твинков.\n"
+            "После голосования: /deputyresults и /deputyclose.\n"
+            "Решение рекомендательное: бот не назначает звания в CoC.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    try:
+        tags = [normalize_tag(s) for s in context.args]
+    except InvalidTagError:
+        await send_or_edit_message(update, "Некорректный тег игрока.")
+        return
+    if len(set(tags)) != len(tags):
+        await send_or_edit_message(update, "Выбери разных кандидатов, без повторений.")
+        return
+    polls: ClanPollStore = context.application.bot_data["clan_poll_store"]
+    current = polls.latest(settings.clan_group_id)
+    if current and current["open"]:
+        await send_or_edit_message(update, "Уже есть открытый опрос. Заверши его через /deputyclose.")
+        return
+    try:
+        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+            data = await fetch_json(client, "/clan")
+    except (httpx.HTTPStatusError, httpx.RequestError):
+        await send_or_edit_message(update, "Не могу проверить кандидатов через CoC API.")
+        return
+    members = {p.get("tag"): p for p in data.get("memberList") or [] if p.get("tag")}
+    if any(tag not in members for tag in tags):
+        await send_or_edit_message(update, "Один из кандидатов не состоит в клане.")
+        return
+    candidates = [{"tag": tag, "name": str(members[tag].get("name") or tag)}
+                  for tag in tags]
+    options = [f"{c['name'][:60]} ({c['tag']})"[:100] for c in candidates]
+    try:
+        msg = await context.bot.send_poll(
+            chat_id=settings.clan_group_id,
+            question="Кого предложить на роль заместителя главы клана?",
+            options=options,
+            is_anonymous=False,
+            allows_multiple_answers=False,
+        )
+        try:
+            polls.create(msg.poll.id, settings.clan_group_id, msg.message_id, candidates)
+        except Exception:
+            await context.bot.stop_poll(chat_id=settings.clan_group_id, message_id=msg.message_id)
+            raise
+    except Exception:
+        logger.warning("Could not create deputy preference poll")
+        await send_or_edit_message(update, "Не удалось создать опрос в группе. Проверь права бота.")
+        return
+    await send_or_edit_message(
+        update, "🗳️ Опрос появился в группе. Telegram показывает все ответы, "
+        "но итоговый рейтинг /deputyresults учитывает только подтверждённых участников CoC."
+    )
+
+
+async def deputy_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    answer = update.poll_answer
+    if not answer or not answer.user:
+        return
+    polls: ClanPollStore = context.application.bot_data["clan_poll_store"]
+    poll = polls.get(answer.poll_id)
+    if not poll or not poll["open"]:
+        return
+    owner_id = answer.user.id
+    storage: BindingsStorage = context.application.bot_data["storage"]
+    linked = storage.get_user_accounts(poll["chat_id"], owner_id)
+    try:
+        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+            clan = await fetch_json(client, "/clan")
+        current_tags = {p.get("tag") for p in clan.get("memberList") or []}
+    except (httpx.HTTPStatusError, httpx.RequestError):
+        logger.warning("Cannot validate poll participant against clan roster")
+        return
+    eligible = any(link.coc_player_tag in current_tags for link in linked)
+    polls.record(answer.poll_id, owner_id, list(answer.option_ids), eligible)
+
+
+async def deputy_results(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not ensure_private_chat(update) or not update.effective_user:
+        return
+    if not await has_captain_access(update, context):
+        await send_or_edit_message(update, "Результаты подтверждённого голосования доступны руководству CoC.")
+        return
+    if not settings.clan_group_id:
+        return
+    polls: ClanPollStore = context.application.bot_data["clan_poll_store"]
+    poll = polls.latest(settings.clan_group_id)
+    if not poll:
+        await send_or_edit_message(update, "Голосований пока нет.")
+        return
+    try:
+        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+            clan = await fetch_json(client, "/clan")
+    except (httpx.HTTPStatusError, httpx.RequestError):
+        await send_or_edit_message(update, "CoC API недоступен. Результаты без проверки не показываем.")
+        return
+    tags = {p.get("tag") for p in clan.get("memberList") or [] if p.get("tag")}
+    storage: BindingsStorage = context.application.bot_data["storage"]
+    voters = storage.get_bindings_for_tags(settings.clan_group_id, tags)
+    eligible_ids = {p.telegram_user_id for p in voters}
+    results = polls.count(poll["id"], eligible_ids)
+    status = "🟢 Открыто" if poll["open"] else "🏁 Завершено"
+    lines = ["🗳️ <b>Голосование о заместителе главы</b>", status, ""]
+    for rank, c in enumerate(results, 1):
+        lines.append(f"{rank}. {html.escape(c['name'][:45])} · {c['votes']} голосов")
+    lines.extend(["", f"Учитываются только подтверждённые владельцы из клана: {sum(c['votes'] for c in results)} голосов.",
+                  "Один человек = один голос, независимо от количества твинков.",
+                  "Рекомендация, а не автоматическое назначение звания."])
+    await send_or_edit_message(update, "\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+async def deputy_close(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not ensure_private_chat(update) or not update.effective_user:
+        return
+    if not await has_captain_access(update, context):
+        await send_or_edit_message(update, "Недостаточно прав CoC.")
+        return
+    polls: ClanPollStore = context.application.bot_data["clan_poll_store"]
+    poll = polls.latest(settings.clan_group_id) if settings.clan_group_id else None
+    if not poll or not poll["open"]:
+        await send_or_edit_message(update, "Открытых голосований нет.")
+        return
+    try:
+        await context.bot.stop_poll(chat_id=poll["chat_id"], message_id=poll["message_id"])
+    except Exception:
+        logger.warning("Telegram poll could not be closed")
+        await send_or_edit_message(update, "Не удалось завершить опрос в Telegram.")
+        return
+    polls.close(poll["id"])
+    await deputy_results(update, context)
 
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2203,6 +2359,7 @@ async def main() -> None:
 
     application.bot_data["storage"] = BindingsStorage(settings.bindings_db_path)
     application.bot_data["war_outcomes"] = WarAnnouncementStore(settings.bindings_db_path)
+    application.bot_data["clan_poll_store"] = ClanPollStore(settings.bindings_db_path)
 
     application.add_handler(MessageHandler(filters.COMMAND, log_any_command), group=-1)
     application.add_handler(CommandHandler("start", start))
@@ -2220,6 +2377,9 @@ async def main() -> None:
     application.add_handler(CommandHandler("progress", progress))
     application.add_handler(CommandHandler("captain", captain_report))
     application.add_handler(CommandHandler("staff", staff))
+    application.add_handler(CommandHandler("deputyvote", deputy_vote))
+    application.add_handler(CommandHandler("deputyresults", deputy_results))
+    application.add_handler(CommandHandler("deputyclose", deputy_close))
     application.add_handler(CommandHandler("raids", clan_raids))
     application.add_handler(CommandHandler("games", clan_games))
     application.add_handler(CommandHandler("ping", ping))
@@ -2245,7 +2405,7 @@ async def main() -> None:
     application.add_handler(CallbackQueryHandler(ranking_callback, pattern=r"^rank:(mode:(war|cwl)|page:[0-9]+)$"))
     application.add_handler(CallbackQueryHandler(account_callback, pattern=r"^acct:(list|view|primary|delete|confirm|progress):[0-9]+$"))
     application.add_handler(CallbackQueryHandler(growth_callback, pattern=r"^growth:days:(0|7|30)$"))
-    application.add_handler(CallbackQueryHandler(staff_callback, pattern=r"^staff:(promotion|kick|bonus)$"))
+    application.add_handler(CallbackQueryHandler(staff_callback, pattern=r"^staff:(promotion|kick|bonus|poll)$"))
     application.add_handler(CallbackQueryHandler(
         lineup_callback, pattern=r"^lineup:(main|bench|details|about|player|refresh|inactive|optout|needs_review|cwl_excluded|twinks|kick|promotion|bonus|weights|sizes|size):[0-9]+$|^lineup:mode:(war|cwl)$"
     ))
@@ -2262,6 +2422,7 @@ async def main() -> None:
         group=2,
     )
     application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, verify_new_members))
+    application.add_handler(PollAnswerHandler(deputy_poll_answer))
     application.add_error_handler(handle_handler_exception)
 
     if settings.clan_group_id is not None:
