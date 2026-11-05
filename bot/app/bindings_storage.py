@@ -55,7 +55,7 @@ class BindingsStorage:
                     conn.execute("ALTER TABLE bindings RENAME TO bindings_v020")
                     self._create_bindings(conn)
                     conn.execute(
-                        """INSERT OR IGNORE INTO bindings
+                        """INSERT INTO bindings
                         (group_id, coc_player_tag, telegram_user_id, telegram_username,
                         telegram_full_name, created_at, is_primary, cwl_opt_in)
                         SELECT group_id, coc_player_tag, telegram_user_id,

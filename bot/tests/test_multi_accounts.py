@@ -70,3 +70,24 @@ def test_partial_deletion_preserves_other_accounts(tmp_path):
         db.upsert_binding(b(7, tag))
     assert db.delete_player_binding(-1005, "#BBB", requester_id=7)
     assert {x.coc_player_tag for x in db.get_bindings_for_user(-1005, 7)} == {"#AAA", "#CCC"}
+
+
+
+def test_legacy_duplicate_player_tag_rolls_back_without_data_loss(tmp_path):
+    db_path = str(tmp_path / "duplicate_legacy.db")
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("""CREATE TABLE bindings(
+            telegram_user_id INTEGER, group_id INTEGER, coc_player_tag TEXT,
+            telegram_username TEXT, telegram_full_name TEXT, created_at TEXT,
+            UNIQUE(group_id,telegram_user_id))""")
+        conn.execute("INSERT INTO bindings VALUES(1,-1005,'#AAA',NULL,'First','2026-11-01')")
+        conn.execute("INSERT INTO bindings VALUES(2,-1005,'#AAA',NULL,'Second','2026-11-02')")
+    try:
+        BindingsStorage(db_path)
+        assert False, "Migration should reject legacy account conflicts"
+    except sqlite3.IntegrityError:
+        pass
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM bindings").fetchone()[0] == 2
+        names = {x[1] for x in conn.execute("PRAGMA table_info(bindings)")}
+        assert "is_primary" not in names
