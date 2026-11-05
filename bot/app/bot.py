@@ -1126,7 +1126,8 @@ async def weights(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except (httpx.HTTPStatusError, httpx.RequestError):
         await send_or_edit_message(update, "Не удалось загрузить веса отбора.")
         return
-    labels = [("strength", "🏰 Сила относительно TH и лиги"),
+    labels = [("strength", "🏰 Сила TH + прокачка" if mode == "cwl" else
+               "🏰 Прокачка относительно TH"),
               ("discipline", "🎯 Дисциплина атак"),
               ("quality", "⭐ Качество атак с учётом цели"),
               ("role", "🛡️ Звание CoC")]

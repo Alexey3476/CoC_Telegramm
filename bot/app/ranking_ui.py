@@ -28,7 +28,10 @@ def ranking_page(data: dict, page: int = 0, per_page: int = 8) -> str:
         lines.append(f"{i+1}. {cons} <b>{n}</b> · TH{p.get('townHallLevel','?')}"
                      f" · <b>{points}</b>{exp}")
         league = html.escape(str(p.get("league") or "?")[:28])
-        lines.append(f"    {league} · {str(p.get('role') or 'member')}")
+        roles = {"leader":"глава","coLeader":"соруководитель",
+                 "admin":"старейшина","member":"участник"}
+        role = roles.get(p.get("role"), "участник")
+        lines.append(f"    {league} · {role}")
     lines += ["", "ℹ️ Красная отметка исключает из состава, но не скрывает игрока в рейтинге.",
               "ЛВК: TH влияет на итог сильнее; КВ: сравнение среди одинаковых TH.",
               "Уровни обороны/стен не доступны через публичный CoC API."]

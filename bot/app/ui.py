@@ -209,7 +209,8 @@ def lineup_message(data: dict, stage: str = "main", page: int = 0) -> str:
         weights = data.get("weights") or {
             "strength": 20, "discipline": 35, "quality": 35, "role": 10,
         }
-        labels = [("strength", "🏰 Прокачка относительно TH и лиги"),
+        labels = [("strength", "🏰 Абсолютная сила TH + прокачка" if data.get("mode") == "cwl" else
+                   "🏰 Прокачка относительно TH"),
                   ("discipline", "🎯 Дисциплина и пропуски"),
                   ("quality", "⭐ Качество атак с учётом силы цели"),
                   ("role", "🛡️ Звание в CoC")]
@@ -233,8 +234,9 @@ def lineup_message(data: dict, stage: str = "main", page: int = 0) -> str:
             "4. Пропущены три назначенные войны подряд → кандидат на кик, НЕ автоматический кик.\n\n"
             "<b>Рейтинг (после допуска):</b> отдельно настраиваются дисциплина, "
             "качество атаки с поправкой на ратушу цели, относительная прокачка TH/лига и звание.\n"
-            "Сила сравнивается с аккаунтами той же TH внутри клана. При единственном игроке "
-            "со своей TH компонент нейтральный, а не надуманные 100%.\n"
+            "КВ: сила сравнивается с игроками той же TH в клане. ЛВК: TH влияет "
+            "на результат существенно сильнее (80% внутри компонента силы); "
+            "остальное включает героев, снаряжение, лигу и небольшой вес опыта.\n"
             "Прокачка обороны недоступна в публичном CoC API.\n"
             "Старый индекс учитывал 55% истории и 45% силы; теперь вместо него разные веса КВ/ЛВК.\n"
             "⚠️ Последний вход НЕ передаётся CoC API. Ручная отметка руководства отдельно "
@@ -262,6 +264,8 @@ def lineup_message(data: dict, stage: str = "main", page: int = 0) -> str:
             f"Индекс {mode}: {rank} · Достоверность: {m.get('confidence') or 'низкая'}",
             f"Относительная прокачка: {m.get('relativeStrength','н/д')} · "
             f"Сравнимых TH: {m.get('townHallPeers','н/д')}",
+            f"Абсолютная сила ЛВК: {m.get('absoluteStrength','н/д')} · "
+            f"Уровень опыта: {m.get('expLevel','н/д')}",
             f"Участие в КВ/ЛВК (CoC): {pref}",
             f"Последний вход: {last}",
             f"Обычные КВ: {hist.get('wars', 0)} войн · {hist.get('attacksUsed', 0)}/{hist.get('attacksPossible', 0)} атак",
@@ -297,7 +301,7 @@ def lineup_message(data: dict, stage: str = "main", page: int = 0) -> str:
         label = html.escape(str(p.get("name") or "?")[:35])
         rank = p.get("selectionScore")
         display = f"{rank:.1f}" if isinstance(rank, (int,float)) else "н/д"
-        hist = p.get("history") or {}
+        hist = (p.get("cwlHistory") if data.get("mode") == "cwl" else p.get("history")) or {}
         observed = f"{hist['wars']} войн" if hist.get("wars") else "без истории"
         rows.append(f"{i}. <b>{label}</b> · TH{p.get('townHallLevel') or '?'} · {display} · {observed}")
         if stage == "promotion":
