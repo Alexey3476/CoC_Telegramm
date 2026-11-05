@@ -13,7 +13,31 @@ LEAGUE_ORDER = {
 
 
 def _league_index(name: str) -> float | None:
-    lower = (name or "").lower()
+    """Parse current ranked leagues (Skeleton 1..Electro 33, Legend=34).
+
+    Preserve legacy names for stored older profile snapshots. Do not treat
+    an unrelated number in a league name as an accurate rating.
+    """
+    lower = (name or "").casefold()
+    if "legend" in lower:
+        return 34.0
+    current_groups = (
+        ("skeleton", 1, 3), ("barbarian", 4, 6), ("archer", 7, 9),
+        ("wizard", 10, 12), ("valkyrie", 13, 15), ("witch", 16, 18),
+        ("golem", 19, 21), ("p.e.k.k.a", 22, 24), ("pekka", 22, 24),
+        ("titan", 25, 27), ("dragon", 28, 30), ("electro", 31, 33),
+    )
+    for group, minimum, maximum in current_groups:
+        if group in lower:
+            matches = [int(m) for m in re.findall(r"\b(?:[1-9]|[12]\d|3[0-3])\b", lower)]
+            valid = [rank for rank in matches if minimum <= rank <= maximum]
+            if valid:
+                return float(valid[-1])
+            # Unknown division: retain a neutral estimate within this tier.
+            if group not in {"titan"} or not re.search(r"\b(i{1,3}|iv|v)\b", lower):
+                return float((minimum + maximum) / 2)
+    # Legacy leagues from older player profiles. These old numeric classes
+    # are only used when the new league is not recognized.
     for league, level in LEAGUE_ORDER.items():
         if league in lower:
             tier = re.search(r"\b(i{1,3}|iv|v)\b", lower)
