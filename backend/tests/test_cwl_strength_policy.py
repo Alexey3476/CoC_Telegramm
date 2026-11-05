@@ -5,7 +5,7 @@ from app.selection import MODE_WEIGHTS, SelectionStore, score_and_categorize
 
 def test_untouched_old_cwl_weights_migrate_once(tmp_path):
     path = str(tmp_path / "selection.sqlite")
-    store = SelectionStore(path)
+    SelectionStore(path)
     with sqlite3.connect(path) as db:
         db.executemany("UPDATE mode_weights SET value=? WHERE mode='cwl' AND metric=?",
                        [(20,"strength"),(35,"discipline"),(40,"quality"),(5,"role")])

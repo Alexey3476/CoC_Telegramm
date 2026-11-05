@@ -66,6 +66,7 @@ def group_standings(group: dict[str, Any], wars: list[dict], clan_tag: str) -> d
         "expectedWars": len(war_tags), "observedWars": len(available),
         "completedWars": completed,
         "fullyObserved": bool(war_tags) and len(available) == len(war_tags),
-        "seasonCompleted": bool(war_tags) and completed == len(war_tags),
+        "seasonCompleted": (bool(war_tags) and completed == len(war_tags)
+                            and group.get("state") in {"ended", "warEnded"}),
         "scheduledRounds": len(group.get("rounds") or []),
     }

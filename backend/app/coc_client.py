@@ -247,7 +247,6 @@ async def get_clan_members(client: httpx.AsyncClient, redis: TTLCache, limit: in
     # Sort by trophies descending
     sorted_members = sorted(members, key=lambda m: m.get("trophies", 0), reverse=True)
     return {
-        "selectionRequestedSize": suggested_size,
         "clanName": clan_data.get("name"),
         "clanTag": clan_data.get("tag"),
         "members": sorted_members[:limit]
@@ -551,6 +550,7 @@ async def get_next_war_analysis(
         selected = {"recommendedLineup": ranking, "recommendedSize": suggested_size}
     return {
         **selected,
+        "selectionRequestedSize": suggested_size,
         "clanName": clan_data.get("name"),
         "clanTag": clan_data.get("tag"),
         "cwlState": cwl_state,

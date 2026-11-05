@@ -333,7 +333,7 @@ def format_cwl_message(data: dict) -> str:
         status = results.get(war.get("result"), "⏳ Неизвестно")
         line = f"{war.get('round',index)}. {name} · {status}"
         if war.get("stars") is not None and war.get("enemyStars") is not None:
-            line += f" · ⭐{war['stars']}:{war['enemyStars']}"
+            line += f" · ⭐{war['stars']} : {war['enemyStars']}"
         lines.append(line)
     teams = board.get("clans") or []
     if teams:
@@ -356,5 +356,5 @@ def format_cwl_message(data: dict) -> str:
         elif not board.get("seasonCompleted"):
             lines.append("ℹ️ В таблице только завершённые матчи, +10⭐ за каждую победу.")
     else:
-        lines.append("\nТаблица мест пока недоступна: данных API недостаточно.")
+        lines.append("\nДоступны только наблюдаемые войны, это не официальная таблица мест ЛВК.")
     return "\n".join(lines)[:4000]
