@@ -39,17 +39,20 @@ War snapshots are sampled locally every five minutes, including clan war league 
 
 Daily public player-profile snapshots are saved in `/data/player_progress.db` without credentials. `/progress` compares hero, equipment, Town Hall and documented lifetime counters with the previous saved day. No active upgrade timers are inferred.
 
-## Version 0.2.1 — alternate accounts and leadership selection
+## Version 0.2.1 — единый профиль, КВ/ЛВК и управление кланом
 
-- /bind verifies additional CoC player tags using their in-game API tokens. A Telegram user can own multiple linked tags; one primary tag is preserved from 0.2.0.
-- /accounts lists verified game tags, /primary #TAG switches the primary, /unlink #TAG removes one link, /unbind confirm removes all. /adminunlink #TAG lets a verified leader/co-leader delete one binding, NOT kick the player or group member.
-- /cwlopt in|out|unknown [#TAG] records player CWL preference separately from CoC profile warPreference. Only owner of a verified tag can submit this.
-- /weights displays the five selection metrics (combat, reliability, performance, participation, manually reported activity). /setweight metric percent is for leaders/co-leaders, automatically normalizing totals to 100.
-- /lastseen #TAG days lets verified leadership manually report the in-game last seen indicator, while /lastseen #TAG clear removes it. Official public Clash API has NO exact last online field. No API changes do NOT prove the player is offline.
-- /nextwar war or /nextwar cwl: main squad, bench, manual >48h inactive reserve, opt-outs and unknown preferences. Opted-out accounts are never auto-selected.
-- Kick candidates are leader-only review suggestions requiring missed attacks and at least seven days manually confirmed inactivity. Promotions require consistent archived performance. CWL bonuses require actual CWL history; no invented records.
-- No automatic kicks, promotions or bonuses. Missing activity/attack history is displayed as unknown, not zero. Selection weights are kept in /data/selection.db, alternate links migrate additively in /data/bindings.db.
-- Back up the Home Assistant add-on data before updating.
+- При /bind бот показывает только **ещё не привязанные** игровые аккаунты из текущего состава клана. У каждого CoC-тега может быть один проверенный владелец Telegram. Доказательство владения — игровой API Token, не совпадение имён.
+- /profile и /accounts ведут в один профиль: **ники, ратуши, лига, донат, звания**, статистика аккаунтов, выбор основного, удаление отдельных привязок с подтверждением. /primary #TAG и /unlink #TAG доступны как команды; /unbind confirm удаляет все личные привязки.
+- Максимальные права определяются **по любому подтверждённому аккаунту** пользователя в CoC. Если хотя бы один является `leader` или `coLeader`, доступно /staff и /captain, включая /setweight, /lastseen и /adminunlink. Администрирование Telegram-группы не даёт этих прав.
+- **Единственный источник согласия на КВ и ЛВК — `warPreference` из CoC**. Красная отметка исключает из рекомендуемого состава в обоих режимах. Отдельный Telegram-переключатель ЛВК удалён из интерфейса.
+- Отдельные весовые таблицы: КВ = 20% прокачка относительно TH/лиги, 35% дисциплина, 35% качество атак, 10% звание CoC; ЛВК = 20/35/40/5. Качество атак снижает вес «лёгких» целей и сглаживает малые выборки. Глава или соруководитель может менять веса: `/setweight war quality 40`, `/setweight cwl role 10`; сумма автоматически остаётся 100%.
+- **Прокачка** сравнивается только с участниками своего TH: уровень героев, снаряжение, текущая лига. Нельзя судить об обороне, стенах или ловушках, поскольку их уровни не предоставляются публичным CoC API; при отсутствии сверстников индекс нейтральный с пометкой низкой достоверности.
+- **Дисциплина:** полностью пропущенный раунд текущей ЛВК исключает из оставшихся её раундов; три подряд назначенные и полностью пропущенные войны → кандидат на рассмотрение кика. Использовать одну из двух атак — недисциплинированно, но это не полностью пропущенная война. Кик не выполняется автоматически.
+- Последний вход **не предоставляется CoC API**. Только руководитель может вручную перенести наблюдение из игры: `/lastseen #TAG 3` (дней назад) или `/lastseen #TAG clear`. Подтверждённая ручная отметка 48+ часов создаёт отдельный резерв. Неизвестный вход не считается 0 активностью.
+- Разделы КВ/ЛВК: рекомендуемый состав, запас, отказавшиеся, неактивные, твинки, дисквалифицированные до конца текущей ЛВК, кандидаты на повышение, кик и бонусы. Последние три доступны только CoC-руководству; все действия в игре ручные.
+- /topplayers открывает **интерактивный список игроков с персональными карточками**, а не только текстовый рейтинг. /donate показывает топ пожертвований текущего сезона; /hall — донат, реальные военные результаты, рейды последнего доступного сезона и кандидатуры на повышение. Очки Игр кланов отсутствуют в официальном публичном API, поэтому не выдумываются.
+- /progress позволяет выбрать любого своего твинка и период **7 дней / 30 дней / всё время**. Отдельные SQLite-снимки по каждому CoC-тегу сохраняются в `/data/player_progress.db`. Для сравнения нужны как минимум два разных дня наблюдений.
+- Данные продолжают храниться в постоянных SQLite-файлах под `/data`. До обновления рекомендуется создать полную резервную копию аддона в Home Assistant.
 
 ## Automated post-war messages (0.2.1)
 
