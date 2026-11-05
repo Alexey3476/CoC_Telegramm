@@ -374,6 +374,7 @@ class PreferenceUpdate(BaseModel):
 class WeightUpdate(BaseModel):
     metric: str
     value: float
+    mode: str = "war"
 
 
 class ManualLastSeenUpdate(BaseModel):
@@ -382,14 +383,17 @@ class ManualLastSeenUpdate(BaseModel):
 
 
 @app.get("/selection/weights")
-async def selection_weights(request: Request):
-    return {"weights": request.app.state.selection.weights()}
+async def selection_weights(request: Request, mode: str = "war"):
+    try:
+        return {"mode": mode, "weights": request.app.state.selection.weights(mode)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/selection/weights")
 async def selection_weight_update(body: WeightUpdate, request: Request):
     try:
-        return {"weights": request.app.state.selection.set_weight(body.metric, body.value)}
+        return {"mode": body.mode, "weights": request.app.state.selection.set_weight(body.metric, body.value, mode=body.mode)}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
