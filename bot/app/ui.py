@@ -134,7 +134,6 @@ def format_raid_message(data: dict) -> str:
 def lineup_keyboard(stage: str = "main", page: int = 0, data: dict | None = None,
                     captain: bool = False) -> InlineKeyboardMarkup:
     mode = (data or {}).get("mode", "war")
-    alternate = "cwl" if mode == "war" else "war"
     rows = [
         [InlineKeyboardButton("⚔️ КВ" if mode == "war" else "⚔️ КВ ↗",
                               callback_data="lineup:mode:war"),

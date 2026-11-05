@@ -263,7 +263,8 @@ def main_menu_keyboard(user_id: int | None = None, captain: bool = False) -> Inl
         [InlineKeyboardButton("👤 Профиль", callback_data="menu_profile"),
          InlineKeyboardButton("👥 Аккаунты", callback_data="menu_accounts")],
         [InlineKeyboardButton("📈 Развитие", callback_data="menu_progress"),
-         InlineKeyboardButton("❓ Справка", callback_data="menu_help")],
+         InlineKeyboardButton("📊 Веса", callback_data="menu_weights")],
+        [InlineKeyboardButton("❓ Справка", callback_data="menu_help")],
     ]
     if captain:
         rows.append([InlineKeyboardButton("📋 Капитанский отчёт", callback_data="menu_captain")])
@@ -1062,6 +1063,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "menu_games": clan_games,
         "menu_war": war,
         "menu_nextwar": next_war_analysis,
+        "menu_weights": weights,
         "menu_cwl": cwl,
         "menu_progress": progress,
         "menu_captain": captain_report,
@@ -1748,46 +1750,77 @@ async def cwl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def next_war_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show a paginated, evidence-labelled lineup rather than a wall of text."""
+    """War or CWL lineup with evidence-labelled categories and server-side permissions."""
     if not update.callback_query and not update.message:
         return
-    msg = await send_or_edit_message(update, "⏳ Загружаю статистику войн...", parse_mode=None)
+    args = context.args or []
+    if args and args[0].lower() in {"war", "cwl"}:
+        mode = args[0].lower()
+    else:
+        mode = context.user_data.get("lineup_mode", "war")
+    if mode not in {"war", "cwl"}:
+        mode = "war"
+    context.user_data["lineup_mode"] = mode
+    msg = await send_or_edit_message(update, "⏳ Анализирую реальные войны и согласие игроков...",
+                                     parse_mode=None)
     try:
-        async with httpx.AsyncClient(timeout=max(45, settings.request_timeout_seconds)) as client:
-            response = await client.get(build_url("/next-war"))
+        async with httpx.AsyncClient(timeout=max(60, settings.request_timeout_seconds)) as client:
+            response = await client.get(build_url("/next-war"), params={"mode": mode})
             response.raise_for_status()
             data = response.json()
         context.user_data["lineup_snapshot"] = data
-        await msg.edit_text(lineup_message(data), parse_mode=ParseMode.HTML,
-                            reply_markup=lineup_keyboard(data=data))
+        captain = await has_captain_access(update, context)
+        await msg.edit_text(
+            lineup_message(data), parse_mode=ParseMode.HTML,
+            reply_markup=lineup_keyboard(data=data, captain=captain),
+        )
     except (httpx.HTTPStatusError, httpx.RequestError):
-        logger.exception("Lineup API unavailable")
-        await msg.edit_text("Не удалось получить статистику. Попробуйте позже.", reply_markup=back_keyboard())
+        logger.warning("Lineup backend unavailable")
+        await msg.edit_text("Не удалось получить состав. Проверь соединение с Clash API.",
+                            reply_markup=back_keyboard())
     except Exception:
         logger.exception("Lineup render failed")
-        await msg.edit_text("Ошибка формирования состава. Проверьте журнал аддона.", reply_markup=back_keyboard())
+        await msg.edit_text("Ошибка формирования состава. Подробности в журнале аддона.",
+                            reply_markup=back_keyboard())
 
 
 async def lineup_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.callback_query:
         return
     await update.callback_query.answer()
-    _, stage, page_raw = (update.callback_query.data or "").split(":")
+    _, stage, page_raw = (update.callback_query.data or "").split(":", 2)
+    if stage == "mode":
+        if page_raw not in {"war", "cwl"}:
+            return
+        context.user_data["lineup_mode"] = page_raw
+        context.args = []
+        await next_war_analysis(update, context)
+        return
     if stage == "refresh":
+        context.args = []
         await next_war_analysis(update, context)
         return
     snapshot = context.user_data.get("lineup_snapshot")
     if not snapshot:
         await update.callback_query.edit_message_text(
-            "Сессия устарела. Обнови данные.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 Загрузить состав", callback_data="menu_nextwar")],
-            ]))
+            "Сессия устарела. Перезагрузи состав.",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("🔄 Обновить", callback_data="menu_nextwar")]]
+            ),
+        )
+        return
+    captain = await has_captain_access(update, context)
+    if stage in {"kick", "promotion", "bonus"} and not captain:
+        await update.callback_query.edit_message_text(
+            "Раздел руководства. Недостаточно прав.",
+            reply_markup=back_keyboard(),
+        )
         return
     page = max(0, min(50, int(page_raw)))
     await update.callback_query.edit_message_text(
         lineup_message(snapshot, stage, page), parse_mode=ParseMode.HTML,
-        reply_markup=lineup_keyboard(stage, page, snapshot))
+        reply_markup=lineup_keyboard(stage, page, snapshot, captain=captain),
+    )
 
 
 async def main() -> None:
@@ -1848,7 +1881,9 @@ async def main() -> None:
     application.add_handler(CallbackQueryHandler(bind_cancel, pattern="^bind_cancel$"))
     application.add_handler(CallbackQueryHandler(roster_callback, pattern=r"^pick:(manual|page|player):[0-9]+$"))
     application.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
-    application.add_handler(CallbackQueryHandler(lineup_callback, pattern=r"^lineup:(main|bench|details|about|player|refresh):[0-9]+$"))
+    application.add_handler(CallbackQueryHandler(
+        lineup_callback, pattern=r"^lineup:(main|bench|details|about|player|refresh|inactive|optout|needs_review|kick|promotion|bonus|weights):[0-9]+$|^lineup:mode:(war|cwl)$"
+    ))
     
     # One router avoids two handlers replying to a successful token message.
     application.add_handler(
