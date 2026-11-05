@@ -19,7 +19,7 @@ DEFAULT_WEIGHTS = {
 }
 MODE_WEIGHTS = {
     "war": {"strength": 20.0, "discipline": 35.0, "quality": 35.0, "role": 10.0},
-    "cwl": {"strength": 20.0, "discipline": 35.0, "quality": 40.0, "role": 5.0},
+    "cwl": {"strength": 45.0, "discipline": 25.0, "quality": 25.0, "role": 5.0},
 }
 ROLE_SCORE = {"leader": 100.0, "coLeader": 85.0, "admin": 65.0, "member": 50.0}
 PREFS = ("in", "out", "unknown")
@@ -171,8 +171,19 @@ def score_and_categorize(
         def cautious(value: float | None) -> float:
             return round((min(100., max(0., float(value))) * count + 50 * 3)
                          / (count + 3), 1) if value is not None else 50.0
+        # CWL has no matchmaking equalizer: TH18 is stronger than TH15
+        # even when the two players rank equally among their own-TH peers.
+        hall = int(p.get("townHallLevel") or 0)
+        hall_baseline = {
+            18: 100, 17: 88, 16: 76, 15: 63, 14: 52,
+            13: 43, 12: 35, 11: 28, 10: 22,
+        }.get(hall, min(100, max(0, hall * 2)))
+        mode_strength = (
+            round(.75 * hall_baseline + .25 * strength["relativeStrength"], 1)
+            if mode == "cwl" else strength["relativeStrength"]
+        )
         components = {
-            "strength": strength["relativeStrength"],
+            "strength": mode_strength,
             "discipline": cautious(attendance),
             "quality": cautious(quality),
             "role": ROLE_SCORE.get(p.get("role"), 50.0),
@@ -205,6 +216,7 @@ def score_and_categorize(
             "selectionScore": score, "scoreWeights": dict(weights),
             "scoreComponents": components, "relativeStrength": strength["relativeStrength"],
             "strengthCoverage": strength["strengthCoverage"],
+            "townHallBaseline": hall_baseline, "modeStrength": mode_strength,
             "townHallPeers": strength["townHallPeers"],
             "confidence": "high" if count >= 5 and strength["strengthCoverage"] > 0 else
                           "medium" if count >= 3 else "low",
@@ -240,8 +252,27 @@ def score_and_categorize(
     eligible = sorted((p for p in full if p["eligibility"] == "candidate"),
                       key=lambda p: (-p["selectionScore"], -int(p.get("townHallLevel") or 0),
                                      str(p.get("name") or "")))
-    groups["main"] = eligible[:max(0, int(size))]
-    groups["bench"] = eligible[max(0, int(size)):]
+    slots = max(0, int(size))
+    if mode == "war" and len(eligible) > slots and slots > 0:
+        # Largest-remainder quotas preserve a balanced TH distribution.
+        from collections import Counter
+        totals = Counter(int(p.get("townHallLevel") or 0) for p in eligible)
+        exact = {th: slots * amount / len(eligible) for th, amount in totals.items()}
+        quota = {th: int(value) for th, value in exact.items()}
+        for th in sorted(totals, key=lambda h: (-(exact[h] - quota[h]), -h))[:slots - sum(quota.values())]:
+            quota[th] += 1
+        chosen = []
+        for p in eligible:
+            th = int(p.get("townHallLevel") or 0)
+            if quota[th]:
+                chosen.append(p)
+                quota[th] -= 1
+        chosen_tags = {p.get("tag") for p in chosen}
+        groups["main"] = chosen
+        groups["bench"] = [p for p in eligible if p.get("tag") not in chosen_tags]
+    else:
+        groups["main"] = eligible[:slots]
+        groups["bench"] = eligible[slots:]
     for p in full:
         if p["eligibility"] in ("inactive", "optout", "needs_review", "cwl_excluded"):
             groups[p["eligibility"]].append(p)
