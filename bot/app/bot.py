@@ -560,7 +560,15 @@ async def clan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
             payload = await fetch_json(client, "/clan")
-        await send_or_edit_message(update, format_clan(payload), parse_mode=ParseMode.MARKDOWN)
+        await send_or_edit_message(
+            update, format_clan(payload), parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏆 Зал славы", callback_data="menu_hall"),
+                 InlineKeyboardButton("🎁 Донат", callback_data="menu_donate")],
+                [InlineKeyboardButton("👥 Игроки", callback_data="menu_topplayers")],
+                [InlineKeyboardButton("🏠 Штаб", callback_data="menu_home")],
+            ]),
+        )
     except httpx.HTTPStatusError as exc:
         logger.warning("Clan API request failed status=%s", exc.response.status_code)
         await send_or_edit_message(update, binding_error_message(exc.response.status_code))
@@ -2025,6 +2033,23 @@ async def next_war_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             response = await client.get(build_url("/next-war"), params={"mode": mode})
             response.raise_for_status()
             data = response.json()
+        # The backend intentionally has no access to Telegram identities.
+        # Only the bot can show which verified game tags belong to one owner.
+        storage: BindingsStorage = context.application.bot_data["storage"]
+        all_players = data.get("recommendedLineup") or []
+        bindings = storage.get_bindings_for_tags(
+            settings.clan_group_id or 0,
+            [p["tag"] for p in all_players if p.get("tag")],
+        )
+        owners: dict[int, list[str]] = {}
+        for bound in bindings:
+            owners.setdefault(bound.telegram_user_id, []).append(bound.coc_player_tag)
+        tag_count = {tag: len(tags) for tags in owners.values() for tag in tags}
+        for player in all_players:
+            player["ownerAccountCount"] = tag_count.get(player.get("tag"), 1)
+        data.setdefault("categories", {})["twinks"] = [
+            p for p in all_players if p.get("ownerAccountCount", 1) > 1
+        ]
         context.user_data["lineup_snapshot"] = data
         captain = await has_captain_access(update, context)
         stage = context.user_data.pop("lineup_target_stage", "main")
