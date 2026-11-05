@@ -1,7 +1,6 @@
 """Persistent non-anonymous clan deputy poll, one Telegram identity per choice."""
 import json
 import sqlite3
-from datetime import datetime, timezone
 from pathlib import Path
 
 
