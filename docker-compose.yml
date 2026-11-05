@@ -1,19 +1,9 @@
 services:
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-
   backend:
     build:
       context: ./backend
     env_file:
       - .env
-    depends_on:
-      - redis
-    ports:
-      - "8000:8000"
     restart: unless-stopped
 
   bot:
