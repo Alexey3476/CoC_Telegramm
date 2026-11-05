@@ -103,10 +103,22 @@ def _score(player: dict, status: str, policy: SelectionPolicy) -> tuple[float, l
     if status == "unknown":
         evidence.append("Неизвестна заявка на этот тип войны")
     known = sum(getattr(policy, field) for field in WEIGHT_FIELDS if record[field] is not None)
-    score = sum(getattr(policy, field) * (record[field] or 0) for field in WEIGHT_FIELDS
-                if record[field] is not None) / known if known else 0.0
-    coverage = round(known, 1)
-    return round(score, 1), evidence, {"components": record, "evidenceWeightPct": coverage}
+    # Missing observations get a neutral prior, not an invented activity result.
+    ranking_values = {}
+    for field in WEIGHT_FIELDS:
+        raw = record[field]
+        if raw is None:
+            ranking_values[field] = 50.0
+        elif field in {"attendance", "attack"}:
+            ranking_values[field] = round((raw * war_count + 150) / (war_count + 3), 1)
+        else:
+            ranking_values[field] = raw
+    score = sum(getattr(policy, field) * ranking_values[field] for field in WEIGHT_FIELDS) / 100
+    return round(score, 1), evidence, {
+        "components": record,
+        "rankingComponents": ranking_values,
+        "evidenceWeightPct": round(known, 1),
+    }
 
 
 def _kick_evidence(player: dict, policy: SelectionPolicy, preference: str, activity: float | None,
