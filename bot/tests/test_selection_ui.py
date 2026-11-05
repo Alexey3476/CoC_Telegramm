@@ -15,5 +15,9 @@ def test_weights_and_categories_render():
     keys = lineup_keyboard(data=data)
     callback_data = [button.callback_data for row in keys.inline_keyboard for button in row]
     assert "lineup:cwl:0" in callback_data
-    assert "lineup:kick:0" in callback_data
-    assert "lineup:bonus:0" in callback_data
+    assert "lineup:kick:0" not in callback_data
+    assert "lineup:bonus:0" not in callback_data
+    privileged = {**data, "viewerIsCaptain": True}
+    admin_callbacks = [button.callback_data for row in lineup_keyboard(data=privileged).inline_keyboard for button in row]
+    assert "lineup:kick:0" in admin_callbacks
+    assert "lineup:bonus:0" in admin_callbacks
