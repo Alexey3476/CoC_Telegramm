@@ -31,7 +31,8 @@ def roster_keyboard(roster: list[dict], page: int = 0, per_page: int = 8) -> Inl
         rows.append(nav)
     rows.extend([
         [InlineKeyboardButton("🎁 Донат", callback_data="players:donate:0"),
-         InlineKeyboardButton("🏆 Зал славы", callback_data="players:hall:0")],
+         InlineKeyboardButton("🏅 Рейтинг", callback_data="menu_ranking")],
+        [InlineKeyboardButton("🏆 Зал славы", callback_data="players:hall:0")],
         [InlineKeyboardButton("🏠 Штаб", callback_data="menu_home")],
     ])
     return InlineKeyboardMarkup(rows)

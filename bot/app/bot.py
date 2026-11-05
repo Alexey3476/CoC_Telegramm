@@ -31,6 +31,7 @@ from app.tags import assign_game_tag, sync_tags_daily
 from app.binding_ui import sorted_roster, roster_keyboard, available_roster
 from app.captain import is_captain, captain_report_text
 from app.players_ui import roster_page, roster_keyboard as players_roster_keyboard, donation_text, hall_text, back_to_roster
+from app.ranking_ui import ranking_page, ranking_keyboard
 from app.profile_ui import (profile_text, profile_keyboard, detail_text, detail_keyboard,
                             delete_keyboard, progress_text, progress_keyboard)
 from app.war_results import WarAnnouncementStore, classify_result, format_result, recently_finished, war_identity
@@ -266,7 +267,8 @@ def main_menu_keyboard(user_id: int | None = None, captain: bool = False) -> Inl
         [InlineKeyboardButton("🏛️ Столица", callback_data="menu_raids"),
          InlineKeyboardButton("🏰 Клан", callback_data="menu_clan")],
         [InlineKeyboardButton("🎁 Донат", callback_data="menu_donate"),
-         InlineKeyboardButton("🏆 Зал славы", callback_data="menu_hall")],
+         InlineKeyboardButton("🏅 Рейтинг", callback_data="menu_ranking")],
+        [InlineKeyboardButton("🏆 Зал славы", callback_data="menu_hall")],
         [InlineKeyboardButton("👤 Профиль", callback_data="menu_profile"),
          InlineKeyboardButton("👥 Аккаунты", callback_data="menu_accounts")],
         [InlineKeyboardButton("📈 Развитие", callback_data="menu_progress"),
@@ -289,6 +291,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/war — текущая война и атаки\n"
         "/nextwar — подбор состава и история\n"
         "/donate — пожертвования сезона\n"
+        "/ranking — общий рейтинг игроков КВ/ЛВК\n"
         "/hall — зал славы клана\n"
         "/cwl — результаты ЛВК\n"
         "/progress — развитие любого своего аккаунта\n"
@@ -323,6 +326,7 @@ async def sync_bot_commands(bot) -> None:
             BotCommand("staff", "🛡️ Управление кланом"),
             BotCommand("donate", "🎁 Донат сезона"),
             BotCommand("hall", "🏆 Зал славы"),
+            BotCommand("ranking", "🏅 Рейтинг игроков"),
             BotCommand("profile", "👤 Мой профиль"),
             BotCommand("clan", "🏰 Информация о клане"),
             BotCommand("help", "❓ Помощь")]
@@ -565,7 +569,8 @@ async def clan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🏆 Зал славы", callback_data="menu_hall"),
                  InlineKeyboardButton("🎁 Донат", callback_data="menu_donate")],
-                [InlineKeyboardButton("👥 Игроки", callback_data="menu_topplayers")],
+                [InlineKeyboardButton("👥 Игроки", callback_data="menu_topplayers"),
+                 InlineKeyboardButton("🏅 Рейтинг", callback_data="menu_ranking")],
                 [InlineKeyboardButton("🏠 Штаб", callback_data="menu_home")],
             ]),
         )
@@ -1223,6 +1228,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "menu_topplayers": top_players,
         "menu_donate": donations,
         "menu_hall": hall_of_fame,
+        "menu_ranking": clan_ranking,
         "menu_clan": clan,
         "menu_raids": clan_raids,
         "menu_games": clan_games,
@@ -1732,6 +1738,50 @@ async def top_players(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await send_or_edit_message(update, "Список игроков пока недоступен.")
 
 
+async def clan_ranking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show explicit, paginated 0-100 ranking of ALL clan members."""
+    if not update.effective_user:
+        return
+    mode = context.user_data.get("rank_mode", "cwl")
+    if context.args and context.args[0].lower() in {"war", "cwl"}:
+        mode = context.args[0].lower()
+    context.user_data["rank_mode"] = mode
+    try:
+        async with httpx.AsyncClient(timeout=max(60, settings.request_timeout_seconds)) as client:
+            response = await client.get(build_url("/next-war"), params={"mode": mode})
+            response.raise_for_status()
+            data = response.json()
+        context.user_data["ranking_data"] = data
+        await send_or_edit_message(update, ranking_page(data),
+                                   parse_mode=ParseMode.HTML,
+                                   reply_markup=ranking_keyboard(data))
+    except (httpx.HTTPStatusError, httpx.RequestError):
+        logger.warning("Clan ranking API unavailable")
+        await send_or_edit_message(update, "Не удалось получить рейтинг клана.")
+
+
+async def ranking_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.callback_query:
+        return
+    await update.callback_query.answer()
+    _, action, value = update.callback_query.data.split(":", 2)
+    if action == "mode":
+        if value not in {"war","cwl"}:
+            return
+        context.user_data["rank_mode"] = value
+        context.args = []
+        await clan_ranking(update, context)
+        return
+    data = context.user_data.get("ranking_data")
+    if data is None:
+        context.args = []
+        await clan_ranking(update, context)
+        return
+    page = max(0, min(10, int(value)))
+    await send_or_edit_message(update, ranking_page(data, page), parse_mode=ParseMode.HTML,
+                               reply_markup=ranking_keyboard(data, page))
+
+
 async def donations(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     roster = context.user_data.get("clan_player_roster")
     if roster is None:
@@ -2161,6 +2211,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("topplayers", top_players))
     application.add_handler(CommandHandler("donate", donations))
     application.add_handler(CommandHandler("hall", hall_of_fame))
+    application.add_handler(CommandHandler("ranking", clan_ranking))
     application.add_handler(CommandHandler("player", player))
     application.add_handler(CommandHandler("war", war))
     application.add_handler(CommandHandler("nextwar", next_war_analysis))
@@ -2190,6 +2241,7 @@ async def main() -> None:
     application.add_handler(CallbackQueryHandler(roster_callback, pattern=r"^pick:(manual|page|player):[0-9]+$"))
     application.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
     application.add_handler(CallbackQueryHandler(players_callback, pattern=r"^players:(view|page|hall|donate):[0-9]+$"))
+    application.add_handler(CallbackQueryHandler(ranking_callback, pattern=r"^rank:(mode:(war|cwl)|page:[0-9]+)$"))
     application.add_handler(CallbackQueryHandler(account_callback, pattern=r"^acct:(list|view|primary|delete|confirm|progress):[0-9]+$"))
     application.add_handler(CallbackQueryHandler(growth_callback, pattern=r"^growth:days:(0|7|30)$"))
     application.add_handler(CallbackQueryHandler(staff_callback, pattern=r"^staff:(promotion|kick|bonus)$"))
