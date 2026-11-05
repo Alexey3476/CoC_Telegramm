@@ -131,27 +131,45 @@ def format_raid_message(data: dict) -> str:
     return "\n".join(lines)
 
 
-def lineup_keyboard(stage: str = "main", page: int = 0, data: dict | None = None) -> InlineKeyboardMarkup:
+def lineup_keyboard(stage: str = "main", page: int = 0, data: dict | None = None,
+                    captain: bool = False) -> InlineKeyboardMarkup:
+    mode = (data or {}).get("mode", "war")
+    alternate = "cwl" if mode == "war" else "war"
     rows = [
+        [InlineKeyboardButton("⚔️ КВ" if mode == "war" else "⚔️ КВ ↗",
+                              callback_data="lineup:mode:war"),
+         InlineKeyboardButton("🏆 ЛВК" if mode == "cwl" else "🏆 ЛВК ↗",
+                              callback_data="lineup:mode:cwl")],
         [InlineKeyboardButton("✅ Состав", callback_data="lineup:main:0"),
          InlineKeyboardButton("🪑 Запас", callback_data="lineup:bench:0")],
+        [InlineKeyboardButton("🕒 Неактивные", callback_data="lineup:inactive:0"),
+         InlineKeyboardButton("🚫 Отказались", callback_data="lineup:optout:0")],
+        [InlineKeyboardButton("❔ Уточнить", callback_data="lineup:needs_review:0"),
+         InlineKeyboardButton("📊 Веса", callback_data="lineup:weights:0")],
         [InlineKeyboardButton("👤 Игроки", callback_data="lineup:details:0"),
          InlineKeyboardButton("ℹ️ Методика", callback_data="lineup:about:0")],
     ]
+    if captain:
+        rows.extend([
+            [InlineKeyboardButton("⚠️ На рассмотрение", callback_data="lineup:kick:0"),
+             InlineKeyboardButton("📈 Повышение", callback_data="lineup:promotion:0")],
+            [InlineKeyboardButton("🎖 Бонусы CWL", callback_data="lineup:bonus:0")],
+        ])
     if stage == "details" and data:
         members = data.get("recommendedLineup") or []
         offset = page * 6
         for idx in range(offset, min(offset + 6, len(members))):
             member = members[idx]
-            label = f"{idx + 1}. {str(member.get('name', '?'))[:20]}"
-            rows.append([InlineKeyboardButton(label, callback_data=f"lineup:player:{idx}")])
-        navigation = []
+            rows.append([InlineKeyboardButton(
+                f"{idx + 1}. {str(member.get('name') or '?')[:20]}",
+                callback_data=f"lineup:player:{idx}")])
+        nav = []
         if page:
-            navigation.append(InlineKeyboardButton("◀", callback_data=f"lineup:details:{page - 1}"))
+            nav.append(InlineKeyboardButton("◀ Назад", callback_data=f"lineup:details:{page - 1}"))
         if offset + 6 < len(members):
-            navigation.append(InlineKeyboardButton("▶", callback_data=f"lineup:details:{page + 1}"))
-        if navigation:
-            rows.append(navigation)
+            nav.append(InlineKeyboardButton("Далее ▶", callback_data=f"lineup:details:{page + 1}"))
+        if nav:
+            rows.append(nav)
     rows.extend([[InlineKeyboardButton("🔄 Обновить", callback_data="lineup:refresh:0")],
                  [InlineKeyboardButton("🏠 Штаб", callback_data="menu_home")]])
     return InlineKeyboardMarkup(rows)
@@ -159,58 +177,110 @@ def lineup_keyboard(stage: str = "main", page: int = 0, data: dict | None = None
 
 def lineup_message(data: dict, stage: str = "main", page: int = 0) -> str:
     members = data.get("recommendedLineup") or []
-    size = max(1, min(25, int(data.get("recommendedSize") or 15)))
-    size = min(size, len(members))
+    categories = data.get("categories") or {}
+    size = max(0, min(50, int(data.get("recommendedSize") or 0)))
+    if not categories:
+        # Keep pre-0.2.1 fixtures usable.
+        size = max(1, size) if members else 0
+        categories = {"main": members[:size], "bench": members[size:]}
     total = int(data.get("observedWarCount") or 0)
-    header = f"⚔️ <b>Подбор состава · {html.escape(str(data.get('clanName') or 'Клан'))}</b>\n"
-    header += f"Предварительный размер: <b>{size} игроков</b> · История: {total} войн\n"
+    mode = "ЛВК" if data.get("mode") == "cwl" else "КВ"
+    header = (
+        f"⚔️ <b>Следующая война · {html.escape(str(data.get('clanName') or 'Клан'))}</b>\n"
+        f"Режим: <b>{mode}</b> · Состав: {len(categories.get('main') or [])} · "
+        f"История: {total} войн\n"
+    )
+    if stage == "weights":
+        weights = data.get("weights") or {
+            "combat": 30, "reliability": 25, "performance": 25,
+            "participation": 10, "activity": 10,
+        }
+        labels = [
+            ("combat", "🏰 Сила аккаунта"),
+            ("reliability", "🎯 Атаки без пропусков"),
+            ("performance", "⭐ Звёзды по целям"),
+            ("participation", "✅ Согласие на участие"),
+            ("activity", "🕒 Ручная отметка входа"),
+        ]
+        lines = [header, "📊 <b>Таблица весов и приоритетов</b>"]
+        lines.extend(f"{label}: <b>{float(weights.get(key, 0)):g}%</b>"
+                     for key, label in labels)
+        lines.append("\nСумма: 100%. Если показатель неизвестен, его вес "
+                     "перераспределяется между известными, а не превращается в ноль.")
+        lines.append("Руководство может менять веса: /setweight combat 35")
+        return "\n".join(lines)
     if stage == "about":
         return header + (
-            "\n<b>Как считается индекс?</b>\n"
-            "• Сила аккаунта: ратуша, герои и снаряжение.\n"
-            "• Надёжность: использованные атаки и звёзды против соперников разного TH.\n"
-            "• При наличии истории: 55% история, 45% сила.\n"
-            "• Без истории индекс основан только на силе, не доказывает надёжность.\n\n"
-            "⚠️ Это рекомендация, а не прогноз и не автоматический выбор на войну."
+            "\n<b>Приоритеты отбора</b>\n"
+            "1. Согласие на текущий режим (КВ из игрового профиля, ЛВК из Telegram).\n"
+            "2. Подтверждённая ручная отметка отсутствия более 48 часов → запас вне состава.\n"
+            "3. Взвешенные сила, дисциплина и результаты по сохранённым войнам.\n"
+            "4. Недостаток истории отмечается низкой уверенностью.\n\n"
+            "Боевой индекс прежней версии: 55% история и 45% сила. "
+            "Теперь дополнительно используются настраиваемые веса факторов.\n"
+            "⚠️ Последний вход НЕ приходит из CoC API. Ручная дата от руководства "
+            "не должна приниматься за автоматически измеренную активность.\n"
+            "Категории исключений, повышений и бонусов лишь рекомендации, "
+            "бот никого автоматически не исключает."
         )
     if stage == "player":
         if not 0 <= page < len(members):
             return header + "\nИгрок не найден."
         m = members[page]
         hist = m.get("history") or {}
-        pref = {"in": "Хочет участвовать", "out": "Не хочет участвовать"}.get(m.get("warPreference"), "Неизвестно")
-        return header + (
-            f"\n<b>{html.escape(str(m.get('name') or '?'))}</b> · TH{m.get('townHallLevel') or '?'}\n"
-            f"Тег: <code>{html.escape(str(m.get('tag') or ''))}</code>\n"
-            f"Индекс: {m.get('warReadiness') or 'н/д'} · {pref}\n"
-            f"Завершённых войн: {hist.get('wars', 0)}\n"
-            f"Атак использовано: {hist.get('attacksUsed', 0)}/{hist.get('attacksPossible', 0)}\n"
-            f"Пропуски: {hist.get('missedAttacks', 'н/д')}\n"
-            f"Средние звёзды: {hist.get('averageStars') if hist.get('averageStars') is not None else 'н/д'}\n"
-            f"Триплы по равным/сильнее: {hist.get('threeStarsEqualOrHigher', 0)}\n"
-            f"Триплы по слабым: {hist.get('threeStarsDownhill', 0)}\n"
-            + ("⚠️ Мало наблюдений, оценка предварительна." if hist.get("wars", 0) < 5 else "")
-        )
+        game_pref = {"in": "Да", "out": "Нет"}.get(m.get("warPreference"), "Неизвестно")
+        cwl_pref = {"in": "Да", "out": "Нет"}.get(m.get("cwlPreference"), "Не указано")
+        manual_age = m.get("lastSeenHoursAgo")
+        seen = (f"По отметке руководства: {manual_age / 24:.1f} дн. назад"
+                if manual_age is not None else "Неизвестно (API не передаёт)")
+        score = m.get("selectionScore")
+        score_label = f"{score:.1f}" if isinstance(score, (int, float)) else "н/д"
+        rows = [
+            header,
+            f"<b>{html.escape(str(m.get('name') or '?'))}</b> · TH{m.get('townHallLevel') or '?'}",
+            f"Тег: <code>{html.escape(str(m.get('tag') or ''))}</code>",
+            f"Индекс: {score_label} · Достоверность: {m.get('confidence') or 'низкая'}",
+            f"КВ (игра): {game_pref} · ЛВК (Telegram): {cwl_pref}",
+            f"Последний вход: {seen}",
+            f"История: {hist.get('wars', 0)} войн · "
+            f"Атаки: {hist.get('attacksUsed', 0)}/{hist.get('attacksPossible', 0)}",
+            f"Пропуски: {hist.get('missedAttacks', 'н/д')}",
+            f"Средние звёзды: {hist.get('averageStars') if hist.get('averageStars') is not None else 'н/д'}",
+            f"Триплы по равным/сильнее: {hist.get('threeStarsEqualOrHigher', 0)}",
+            f"Триплы по слабее: {hist.get('threeStarsDownhill', 0)}",
+        ]
+        rows.extend("• " + html.escape(str(reason)) for reason in (m.get("reasons") or []))
+        return "\n".join(rows)[:4000]
     if stage == "details":
-        return header + "\nВыбери игрока для подробной статистики. Данные доступны только за сохранённые войны."
-    if stage == "bench":
-        subset = list(enumerate(members[size:], size + 1))[:10]
-        title = "🪑 <b>Запасные кандидаты</b>"
-    else:
-        subset = list(enumerate(members[:size], 1))
-        title = "✅ <b>Рекомендуемый состав</b>"
-    rows = [header, title]
-    for idx, m in subset:
+        return header + "\nВыбери игрока. Неполная история не считается нулевой эффективностью."
+    titles = {
+        "main": "✅ Рекомендуемый состав",
+        "bench": "🪑 Запасные",
+        "inactive": "🕒 Потенциально сильные, но неактивные по ручной отметке",
+        "optout": "🚫 Не согласились на участие",
+        "needs_review": "❔ Не подтвердили участие, требуется уточнение",
+        "kick": "⚠️ На рассмотрение руководством, НЕ автоматический кик",
+        "promotion": "📈 Кандидаты на повышение",
+        "bonus": "🎖 Кандидаты на бонусы ЛВК",
+    }
+    subset = categories.get(stage, [])
+    rows = [header, f"<b>{titles.get(stage, 'Рейтинг')}</b>"]
+    if not subset:
+        rows.append("Подходящих игроков по текущим критериям нет.")
+    for index, m in enumerate(subset[:20], 1):
         name = html.escape(str(m.get("name") or "?"))
-        score = m.get("warReadiness")
-        score_label = f"{score:.1f}" if isinstance(score, (int, float)) else "?"
+        score = m.get("selectionScore")
+        score_label = f"{score:.1f}" if isinstance(score, (int, float)) else "н/д"
         hist = m.get("history") or {}
         evidence = f"{hist.get('wars')} войн" if hist.get("wars") else "без истории"
-        preference = " ⚠️ вне заявок" if m.get("warPreference") == "out" else ""
-        rows.append(f"{idx}. <b>{name}</b> · TH{m.get('townHallLevel') or '?'} · {score_label} · {evidence}{preference}")
-    if not subset:
-        rows.append("Нет доступных игроков.")
-    rows.append("\n⚠️ Индексы без истории нельзя сравнивать как подтверждённую надёжность.")
+        rows.append(f"{index}. <b>{name}</b> · TH{m.get('townHallLevel') or '?'} · "
+                    f"{score_label} · {evidence}")
+        if stage in {"kick", "inactive", "needs_review"}:
+            rows.extend(f"  ↳ {html.escape(str(reason))}"
+                        for reason in (m.get("reasons") or [])[:2])
+    if len(subset) > 20:
+        rows.append(f"… ещё {len(subset) - 20}.")
+    rows.append("\nℹ️ Категории — помощь руководству, не автоматические решения.")
     return "\n".join(rows)[:4000]
 
 
