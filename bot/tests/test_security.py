@@ -18,6 +18,6 @@ def test_redaction_of_api_token_in_traceback():
     try:
         raise ValueError("https://api.telegram.org/bot123456:ABC_secret/sendMessage")
     except ValueError:
-        record = logging.LogRecord("test", logging.ERROR, __file__, 1, "Error", (), None,
-                                   exc_info=sys.exc_info())
+        record = logging.LogRecord("test", logging.ERROR, __file__, 1, "Error", (),
+                                   sys.exc_info())
     assert "ABC_secret" not in fmt.format(record)
