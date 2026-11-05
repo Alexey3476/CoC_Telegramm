@@ -29,8 +29,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install -r backend/requirements.txt -r bot/requirements.txt pytest
+      - run: pip install -r backend/requirements.txt -r bot/requirements.txt pytest ruff PyYAML
       - run: python -m compileall -q backend bot coc_telegram
+      - run: ruff check backend bot coc_telegram --select F
       - run: PYTHONPATH=backend python -m pytest backend/tests -q
       - run: PYTHONPATH=bot python -m pytest bot/tests -q
       - run: PYTHONPATH=. python -m pytest coc_telegram/tests -q
@@ -62,5 +63,5 @@ jobs:
           build-args: |
             BUILD_VERSION=${{ steps.version.outputs.version }}
           tags: |
-            ghcr.io/alexey3476/coc-telegram:${{ steps.version.outputs.version }}
-            ghcr.io/alexey3476/coc-telegram:latest
+            ghcr.io/beerlogger01/coc-telegram:${{ steps.version.outputs.version }}
+            ghcr.io/beerlogger01/coc-telegram:latest

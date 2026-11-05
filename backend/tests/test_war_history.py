@@ -1,4 +1,3 @@
-import tempfile
 from pathlib import Path
 from app.war_history import WarHistory, summarize_wars
 

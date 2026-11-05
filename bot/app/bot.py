@@ -18,6 +18,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from telegram.helpers import escape_markdown
 
 from app.backend_client import build_url, fetch_json
 from app.bindings_storage import Binding, BindingsStorage
@@ -32,21 +33,25 @@ TAG_PATTERN = re.compile(r"^[0289PYLQGRJCUV]+$")
 TAG_EXTRACT_PATTERN = re.compile(r"#?[0289PYLQGRJCUV]{4,}")
 
 
+def safe_markdown(value: object, default: str = "N/A") -> str:
+    return escape_markdown(str(value if value is not None else default), version=1)
+
+
 def format_clan(payload: dict[str, Any]) -> str:
     """Format clan information with capital details."""
     msg = (
-        f"*{payload.get('name', 'Clan')}*\n"
-        f"🏷️ Tag: `{payload.get('tag', 'N/A')}`\n"
-        f"📊 Level: {payload.get('clanLevel', 'N/A')}\n"
-        f"👥 Members: {payload.get('members', 'N/A')}\n"
-        f"⚔️ War League: {payload.get('warLeague', {}).get('name', 'N/A')}\n"
+        f"*{safe_markdown(payload.get('name', 'Clan'))}*\n"
+        f"🏷️ Tag: `{safe_markdown(payload.get('tag'))}`\n"
+        f"📊 Level: {safe_markdown(payload.get('clanLevel'))}\n"
+        f"👥 Members: {safe_markdown(payload.get('members'))}\n"
+        f"⚔️ War League: {safe_markdown(payload.get('warLeague', {}).get('name'))}\n"
     )
     
     # Add capital info if available
     capital = payload.get('clanCapital', {})
     if capital:
-        capital_name = capital.get('name', 'Capital')
-        capital_level = capital.get('capitalHallLevel', 'N/A')
+        capital_name = safe_markdown(capital.get('name'), "Capital")
+        capital_level = safe_markdown(capital.get('capitalHallLevel'))
         msg += f"\n🏛️ *Capital:* {capital_name} (Hall Level: {capital_level})\n"
     
     return msg
@@ -54,23 +59,23 @@ def format_clan(payload: dict[str, Any]) -> str:
 
 def format_player(payload: dict[str, Any]) -> str:
     return (
-        f"*{payload.get('name', 'Player')}*\n"
-        f"Tag: `{payload.get('tag', 'N/A')}`\n"
-        f"Town Hall: {payload.get('townHallLevel', 'N/A')}\n"
-        f"Trophies: {payload.get('trophies', 'N/A')}\n"
-        f"Best Trophies: {payload.get('bestTrophies', 'N/A')}\n"
-        f"Clan: {payload.get('clan', {}).get('name', 'No clan')}\n"
+        f"*{safe_markdown(payload.get('name', 'Player'))}*\n"
+        f"Tag: `{safe_markdown(payload.get('tag'))}`\n"
+        f"Town Hall: {safe_markdown(payload.get('townHallLevel'))}\n"
+        f"Trophies: {safe_markdown(payload.get('trophies'))}\n"
+        f"Best Trophies: {safe_markdown(payload.get('bestTrophies'))}\n"
+        f"Clan: {safe_markdown(payload.get('clan', {}).get('name'), 'No clan')}\n"
     )
 
 
 def format_war(payload: dict[str, Any]) -> str:
     """Format war information with current status."""
-    state = payload.get('state', 'N/A')
-    team_size = payload.get('teamSize', 'N/A')
-    start_time = payload.get('startTime', 'N/A')
-    end_time = payload.get('endTime', 'N/A')
+    state = safe_markdown(payload.get('state'))
+    team_size = safe_markdown(payload.get('teamSize'))
+    start_time = safe_markdown(payload.get('startTime'))
+    end_time = safe_markdown(payload.get('endTime'))
     
-    msg = f"⚔️ *Война клана*\n"
+    msg = "⚔️ *Война клана*\n"
     msg += f"*Статус:* {state}\n"
     msg += f"*Размер:* {team_size}v{team_size}\n"
     msg += f"*Начало:* {start_time}\n"
@@ -83,9 +88,9 @@ def format_war(payload: dict[str, Any]) -> str:
         clan_destruction = clan_team.get('destructionPercentage', 0)
         opponent_destruction = opponent.get('destructionPercentage', 0)
         
-        msg += f"\n*Текущий статус войны*\n"
-        msg += f"🏛️ *Наш клан:* {clan_team.get('name', 'N/A')} - {clan_destruction:.1f}% разрушено\n"
-        msg += f"⚔️ *Враги:* {opponent.get('name', 'N/A')} - {opponent_destruction:.1f}% разрушено\n"
+        msg += "\n*Текущий статус войны*\n"
+        msg += f"🏛️ *Наш клан:* {safe_markdown(clan_team.get('name'))} - {clan_destruction:.1f}% разрушено\n"
+        msg += f"⚔️ *Враги:* {safe_markdown(opponent.get('name'))} - {opponent_destruction:.1f}% разрушено\n"
     
     return msg
 
@@ -573,26 +578,6 @@ async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("pong")
     except Exception:  # noqa: BLE001
         logger.exception("Failed to reply to /ping")
-
-
-async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message:
-        return
-    try:
-        menu_text = (
-            "📋 *Menu*\n\n"
-            "🏰 */clan* - Get clan information\n"
-            "👤 */player* <tag> - Get player information\n"
-            "⚔️ */war* - Get current war info\n"
-            "🔗 */bind* <tag> - Bind your player tag\n"
-            "🔓 */unbind* - Unbind your player tag\n"
-            "🏷️ */mytag* - Show your bound tag\n"
-            "🔔 */ping* - Check bot status\n"
-            "⚙️ */settings* - Show bot settings\n"
-        )
-        await update.message.reply_text(menu_text, parse_mode=ParseMode.MARKDOWN)
-    except Exception:  # noqa: BLE001
-        logger.exception("Failed to reply to /menu")
 
 
 async def bind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1294,7 +1279,8 @@ async def war_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     tags_missing_attacks: set[str] = set()
     members_by_tag: dict[str, dict] = {}
     for member in clan_members:
-        if attacks_used(member) >= payload.get("attacksPerMember", 2) or not member.get("tag"):
+        attacks_allowed = int(payload.get("attacksPerMember") or 1)
+        if attacks_used(member) >= attacks_allowed or not member.get("tag"):
             continue
         try:
             tag = normalize_tag(member["tag"])
@@ -1363,11 +1349,6 @@ async def war_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.warning("Failed to send reminder to group %s: %s", group_id, exc)
             continue
         storage.set_cooldowns(group_id, reminded_user_ids, now)
-
-
-async def log_any_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.message and update.message.text:
-        logger.info("Command received: %s from user %s", update.message.text, update.effective_user.id)
 
 
 async def top_players(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1447,21 +1428,21 @@ async def clan_raids(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 clan_capital = current_raid.get("clan", {})
                 resources = clan_capital.get("resources", [])
                 
-                msg = f"🏛️ *Рейды столицы*\n\n"
-                msg += f"*Статус:* Идут в данный момент ⚔️\n"
+                msg = "🏛️ *Рейды столицы*\n\n"
+                msg += "*Статус:* Идут в данный момент ⚔️\n"
                 msg += f"*Начало:* {start_time}\n"
                 msg += f"*Конец:* {end_time}\n"
                 
                 if resources:
-                    msg += f"\n*Ресурсы клана:*\n"
+                    msg += "\n*Ресурсы клана:*\n"
                     for resource in resources:
                         resource_name = resource.get("name", "Resource")
                         amount = resource.get("amount", 0)
                         msg += f"• {resource_name}: {amount}\n"
             else:
                 # Show status when not in progress
-                msg = f"🏛️ *Рейды столицы*\n\n"
-                msg += f"*Статус:* Не проводятся\n"
+                msg = "🏛️ *Рейды столицы*\n\n"
+                msg += "*Статус:* Не проводятся\n"
                 msg += f"*Начало:* {start_time}\n"
                 msg += f"*Конец:* {end_time}\n"
             
@@ -1507,15 +1488,15 @@ async def clan_games(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 # Show current score
                 score = current_games.get("score", "N/A")
                 
-                msg = f"🎮 *Игры кланов*\n\n"
-                msg += f"*Статус:* Идут в данный момент 🏁\n"
+                msg = "🎮 *Игры кланов*\n\n"
+                msg += "*Статус:* Идут в данный момент 🏁\n"
                 msg += f"*Начало:* {start_time}\n"
                 msg += f"*Конец:* {end_time}\n"
                 msg += f"*Очки:* {score}\n"
             else:
                 # Show status when not in progress
-                msg = f"🎮 *Игры кланов*\n\n"
-                msg += f"*Статус:* Не проводятся\n"
+                msg = "🎮 *Игры кланов*\n\n"
+                msg += "*Статус:* Не проводятся\n"
                 msg += f"*Начало:* {start_time}\n"
                 msg += f"*Конец:* {end_time}\n"
             
@@ -1550,7 +1531,7 @@ async def ai_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     mentioned = False
     if bot_username and f"@{bot_username}" in (text or "").lower():
         mentioned = True
-        logger.info(f"ai_reply_handler: bot mentioned directly in text")
+        logger.info("ai_reply_handler: bot mentioned directly in text")
     
     # Check if replying to bot's message
     if not mentioned and update.message.reply_to_message:
@@ -1561,7 +1542,7 @@ async def ai_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             )
             if replied_to_bot:
                 mentioned = True
-                logger.info(f"ai_reply_handler: replying to bot message")
+                logger.info("ai_reply_handler: replying to bot message")
         except Exception as e:
             logger.debug(f"ai_reply_handler: error checking reply: {e}")
 

@@ -67,7 +67,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     redis = TTLCache()
     timeout = httpx.Timeout(settings.request_timeout_seconds)
-    headers = {"Authorization": f"Bearer {settings.coc_token}"}
+    headers = {"Authorization": "Bearer " + str(settings.coc_token)}
     client = httpx.AsyncClient(headers=headers, timeout=timeout)
 
     app.state.redis = redis
