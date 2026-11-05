@@ -176,8 +176,8 @@ def build_selection(
             groups["promotionCandidates"].append(player)
         cwl_hist = player.get("cwlHistory") or {}
         if (int(cwl_hist.get("wars") or 0) >= policy.min_cwl_bonus_wars
-                and cwl_hist.get("reliabilityPct", 0) >= 95
-                and cwl_hist.get("averageStars", 0) >= 2.4):
+                and (cwl_hist.get("reliabilityPct") or 0) >= 95
+                and (cwl_hist.get("averageStars") or 0) >= 2.4):
             groups["bonusCandidates"].append(player)
         if status == "out":
             groups["optedOut"].append(player)

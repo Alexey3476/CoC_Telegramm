@@ -46,7 +46,7 @@ async def sync_tags_daily(context) -> None:
     group_id = settings.clan_group_id
     if group_id is None:
         return
-    bindings = storage.get_bindings_for_group(group_id)
+    bindings = [b for b in storage.get_bindings_for_group(group_id) if b.is_primary]
     semaphore = asyncio.Semaphore(3)
     async def one(binding):
         async with semaphore:

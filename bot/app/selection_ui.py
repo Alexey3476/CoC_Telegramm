@@ -26,16 +26,17 @@ def lineup_keyboard(stage: str = "main", page: int = 0, data: dict | None = None
          InlineKeyboardButton("🏆 ЛВК" + (" ✓" if (data or {}).get("selectionMode") == "cwl" else ""),
                               callback_data="lineup:cwl:0")],
     ]
-    for a, b in ((SECTIONS[0], SECTIONS[1]), (SECTIONS[2], SECTIONS[3]),
-                 (SECTIONS[4], SECTIONS[5]), (SECTIONS[6], SECTIONS[7])):
+    section_pairs = [(SECTIONS[0], SECTIONS[1]), (SECTIONS[2], SECTIONS[3]), (SECTIONS[4], SECTIONS[5])]
+    if (data or {}).get("viewerIsCaptain"):
+        section_pairs.append((SECTIONS[6], SECTIONS[7]))
+    for a, b in section_pairs:
         rows.append([
             InlineKeyboardButton(a[1], callback_data=f"lineup:{a[0]}:0"),
             InlineKeyboardButton(b[1], callback_data=f"lineup:{b[0]}:0"),
         ])
-    rows.append([
-        InlineKeyboardButton("🏅 Кандидаты на бонус", callback_data="lineup:bonus:0"),
-        InlineKeyboardButton("⚖️ Веса", callback_data="lineup:weights:0"),
-    ])
+    if (data or {}).get("viewerIsCaptain"):
+        rows.append([InlineKeyboardButton("🏅 Кандидаты на бонус", callback_data="lineup:bonus:0")])
+    rows.append([InlineKeyboardButton("⚖️ Веса", callback_data="lineup:weights:0")])
     if stage == "details" and data:
         all_players = data.get("recommendedLineup") or []
         for idx in range(page * 6, min((page + 1) * 6, len(all_players))):
@@ -79,6 +80,8 @@ def lineup_message(data: dict, stage: str = "main", page: int = 0) -> str:
         f"Подтверждённых: {len(groups.get('lineup', []))} · Свободно: {data.get('reservedSlots', '?')}",
         "",
     ]
+    if stage in {"kick", "promote", "bonus"} and not data.get("viewerIsCaptain"):
+        return "\n".join(rows + ["Только для руководителей клана."])
     if stage == "weights" or stage == "about":
         weights = data.get("weightTable") or {}
         labels = (("strength", "Сила аккаунта"), ("attendance", "Использование атак"),
@@ -106,7 +109,7 @@ def lineup_message(data: dict, stage: str = "main", page: int = 0) -> str:
             f"Тег: <code>{html.escape(str(p.get('tag') or ''))}</code>",
             f"Индекс: <b>{p.get('selectionScore', '?')}</b> · Покрытие: {coverage}%",
             f"Участие: {p.get('selectionPreference', 'unknown')} · CWL: {p.get('cwlPreference', 'unknown')}",
-            f"Последний вход (ручной): {html.escape(str(p.get('manualLastSeen') or 'неизвестно'))}",
+            f"Последний вход (ручной): {html.escape(str(p.get('manualLastSeen') or 'неизвестно'))}" if not data.get("hideManualLastSeen") else "Время входа доступно руководителю",
             f"Сохранённых войн: {hist.get('wars', 0)}",
             f"Использовано атак: {hist.get('attacksUsed', 0)}/{hist.get('attacksPossible', 0)}",
             f"Пропущено атак: {hist.get('missedAttacks', 0)}",

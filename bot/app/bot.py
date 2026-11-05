@@ -25,7 +25,9 @@ from telegram.helpers import escape_markdown
 from app.backend_client import build_url, fetch_json
 from app.bindings_storage import Binding, BindingsStorage
 from app.settings import env_snapshot, settings, settings_snapshot, validate_settings
-from app.ui import format_war_message, format_raid_message, lineup_message, lineup_keyboard, format_cwl_message
+from app.ui import format_war_message, format_raid_message, format_cwl_message
+from app.selection_ui import lineup_message, lineup_keyboard
+from app.selection import build_selection, policy_from_settings
 from app.tags import assign_game_tag, sync_tags_daily
 from app.binding_ui import sorted_roster, roster_keyboard
 from app.accounts_ui import accounts_text, accounts_keyboard, delete_confirmation
@@ -1402,28 +1404,22 @@ async def war_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         mentions: list[str] = []
         reminded_user_ids: list[int] = []
         
-        # Attempt to rename users and collect mentions
+        # Multiple CoC accounts per user: send ONE Telegram mention with all missed attacks.
+        grouped: dict[int, list[str]] = {}
+        names_by_user: dict[int, str] = {}
         for binding in bindings:
-            last_reminded = cooldowns.get(binding.telegram_user_id)
+            tag = binding.coc_player_tag
+            name = str(members_by_tag.get(tag, {}).get("name") or tag)
+            grouped.setdefault(binding.telegram_user_id, []).append(html.escape(name))
+            names_by_user[binding.telegram_user_id] = binding.telegram_full_name
+        for user_id, names in grouped.items():
+            last_reminded = cooldowns.get(user_id)
             if last_reminded and now - last_reminded < timedelta(hours=1):
                 continue
-            
-            coc_player_name = None
-            if binding.coc_player_tag in members_by_tag:
-                coc_player_name = members_by_tag[binding.coc_player_tag].get("name")
-            
-            if coc_player_name:
-                # Mention with CoC nickname in parentheses
-                mention = format_mention(binding.telegram_user_id, binding.telegram_full_name)
-                mentions.append(f"{mention} ({html.escape(str(coc_player_name))})")
-            else:
-                # Fallback to regular mention
-                mentions.append(format_mention(binding.telegram_user_id, binding.telegram_full_name))
-            
-            reminded_user_ids.append(binding.telegram_user_id)
-            # Add micro pause between mentions to avoid flooding
-            await asyncio.sleep(0.1)
-        
+            mention = format_mention(user_id, names_by_user[user_id])
+            mentions.append(f"{mention} ({', '.join(names)})")
+            reminded_user_ids.append(user_id)
+
         if not mentions:
             continue
         message = (
@@ -1708,43 +1704,64 @@ async def cwl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def next_war_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show a paginated, evidence-labelled lineup rather than a wall of text."""
-    if not update.callback_query and not update.message:
+    """Rebuild war/CWL recommendations with weights, owner limits and evidence labels."""
+    if not update.effective_user:
         return
-    msg = await send_or_edit_message(update, "⏳ Загружаю статистику войн...", parse_mode=None)
+    msg = await send_or_edit_message(update, "⏳ Анализирую КВ/ЛВК и привязанные аккаунты...", parse_mode=None)
     try:
         async with httpx.AsyncClient(timeout=max(45, settings.request_timeout_seconds)) as client:
             response = await client.get(build_url("/next-war"))
             response.raise_for_status()
-            data = response.json()
-        context.user_data["lineup_snapshot"] = data
-        await msg.edit_text(lineup_message(data), parse_mode=ParseMode.HTML,
-                            reply_markup=lineup_keyboard(data=data))
+            raw = response.json()
+        storage: BindingsStorage = context.application.bot_data["storage"]
+        mode = context.user_data.get("selection_mode", "war")
+        result = build_selection(
+            raw, storage, settings.clan_group_id or 0, mode,
+            policy_from_settings(settings),
+        )
+        result["viewerIsCaptain"] = await has_captain_access(update, context)
+        context.user_data["lineup_snapshot"] = result
+        await msg.edit_text(lineup_message(result), parse_mode=ParseMode.HTML,
+                            reply_markup=lineup_keyboard(data=result))
     except (httpx.HTTPStatusError, httpx.RequestError):
-        logger.exception("Lineup API unavailable")
-        await msg.edit_text("Не удалось получить статистику. Попробуйте позже.", reply_markup=back_keyboard())
+        logger.exception("War planning API unavailable")
+        await msg.edit_text("Данные клана временно недоступны.", reply_markup=back_keyboard())
     except Exception:
-        logger.exception("Lineup render failed")
-        await msg.edit_text("Ошибка формирования состава. Проверьте журнал аддона.", reply_markup=back_keyboard())
+        logger.exception("Lineup calculations failed")
+        await msg.edit_text("Не удалось рассчитать состав. Проверь журнал аддона.", reply_markup=back_keyboard())
 
 
 async def lineup_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.callback_query:
         return
     await update.callback_query.answer()
-    _, stage, page_raw = (update.callback_query.data or "").split(":")
+    _, stage, page_raw = (update.callback_query.data or "").split(":", 2)
+    if stage in {"war", "cwl"}:
+        context.user_data["selection_mode"] = stage
+        await next_war_analysis(update, context)
+        return
     if stage == "refresh":
         await next_war_analysis(update, context)
         return
     snapshot = context.user_data.get("lineup_snapshot")
     if not snapshot:
         await update.callback_query.edit_message_text(
-            "Сессия устарела. Обнови данные.",
+            "Расчёт устарел. Загрузи данные заново.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔄 Загрузить состав", callback_data="menu_nextwar")],
             ]))
         return
+    # Never reveal sensitive management watchlists based solely on a crafted callback.
+    if stage in {"kick", "promote", "bonus"}:
+        if not await has_captain_access(update, context):
+            await update.callback_query.edit_message_text(
+                "Это закрытый раздел руководства клана.", reply_markup=back_keyboard())
+            return
     page = max(0, min(50, int(page_raw)))
+    if stage == "player" and not snapshot.get("viewerIsCaptain"):
+        # Player details are available, but manually-entered last login is captain-only.
+        snapshot = dict(snapshot)
+        snapshot["hideManualLastSeen"] = True
     await update.callback_query.edit_message_text(
         lineup_message(snapshot, stage, page), parse_mode=ParseMode.HTML,
         reply_markup=lineup_keyboard(stage, page, snapshot))
@@ -1807,7 +1824,7 @@ async def main() -> None:
     application.add_handler(CallbackQueryHandler(unlink_admin_callback, pattern=r"^admin:(confirm|cancel):"))
     application.add_handler(CallbackQueryHandler(roster_callback, pattern=r"^pick:(manual|page|player):[0-9]+$"))
     application.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
-    application.add_handler(CallbackQueryHandler(lineup_callback, pattern=r"^lineup:(main|bench|details|about|player|refresh):[0-9]+$"))
+    application.add_handler(CallbackQueryHandler(lineup_callback, pattern=r"^lineup:(main|bench|inactive|out|twinks|confirm|kick|promote|bonus|weights|details|about|player|refresh|war|cwl):[0-9]+$"))
     
     # One router avoids two handlers replying to a successful token message.
     application.add_handler(
