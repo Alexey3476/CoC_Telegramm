@@ -87,3 +87,23 @@ def test_weights_cannot_silently_be_wrong():
         assert False
     except ValueError:
         pass
+
+
+
+def test_manual_inactive_no_war_evidence_is_only_review(tmp_path):
+    db = BindingsStorage(str(tmp_path / "db.sqlite"))
+    link(db, 1, "#A", NOW - timedelta(days=9))
+    d = build_selection({"recommendedLineup": [one("#A", wars=0, missed=0)],
+                         "recommendedSize": 15, "observedWarCount": 6},
+                        db, -100, "war", SelectionPolicy(), NOW)
+    assert d["categories"]["inactive"]
+    assert d["categories"]["kickCandidates"]
+    assert "капитан" in d["categories"]["kickCandidates"][0]["kickReasons"][0]
+
+
+def test_promotion_skips_already_senior_captain(tmp_path):
+    db = BindingsStorage(str(tmp_path / "db.sqlite"))
+    player = {**one("#A"), "role": "coLeader"}
+    d = build_selection({"recommendedLineup": [player], "recommendedSize": 1},
+                        db, -100, "war", SelectionPolicy(), NOW)
+    assert not d["categories"]["promotionCandidates"]

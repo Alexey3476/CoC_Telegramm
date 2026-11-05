@@ -91,6 +91,13 @@ def lineup_message(data: dict, stage: str = "main", page: int = 0) -> str:
             rows.append(f"• {label}: <b>{weights.get(key, '?')}%</b>")
         rows.extend([
             "",
+            "<b>Приоритеты допуска (раньше рейтинга):</b>",
+            "1. Отказ от участия → вне состава.",
+            "2. Подтверждённое вручную отсутствие 48+ ч → резерв активности.",
+            "3. Лимит аккаунтов одного владельца → твинки.",
+            "4. Неизвестное согласие → запрос подтверждения.",
+            "5. Остальные по рейтингу → основной состав и запас.",
+            "",
             "Индекс = средневзвешенная оценка только известных компонентов.",
             "При отсутствии истории вес пересчитывается по доступным показателям, и покрытие снижается.",
             "Допуск в состав зависит от заявки, ручного последнего входа и лимита твинков.",
@@ -133,8 +140,11 @@ def lineup_message(data: dict, stage: str = "main", page: int = 0) -> str:
         if people:
             for index, p in enumerate(people[:18], 1):
                 rows.append(_player_line(p, index))
-                if stage == "kick":
-                    for reason in p.get("kickReasons") or []:
+                reasons = {
+                    "kick": "kickReasons", "promote": "promotionReasons", "bonus": "bonusReasons"
+                }.get(stage)
+                if reasons:
+                    for reason in p.get(reasons) or []:
                         rows.append(f"   ↳ {html.escape(str(reason))}")
         else:
             rows.append("Нет игроков в этой категории.")

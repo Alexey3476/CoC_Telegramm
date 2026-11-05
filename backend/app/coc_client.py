@@ -454,6 +454,7 @@ async def get_next_war_analysis(
             "warStars": profile.get("warStars"),
             "donations": member.get("donations", 0),
             "warPreference": preference,
+            "role": member.get("role"),
             "league": (profile.get("league") or member.get("league") or {}).get("name", "Unknown"),
             "heroesLevel": heroes_level if profile else None,
             "heroEquipmentScore": equipment_level if profile else None,

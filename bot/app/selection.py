@@ -107,7 +107,8 @@ def _score(player: dict, status: str, policy: SelectionPolicy) -> tuple[float, l
     return round(score, 1), evidence, {"components": record, "evidenceWeightPct": coverage}
 
 
-def _kick_evidence(player: dict, policy: SelectionPolicy, preference: str, activity: float | None) -> list[str]:
+def _kick_evidence(player: dict, policy: SelectionPolicy, preference: str, activity: float | None,
+                   observed_clan_wars: int) -> list[str]:
     """Review only. No automatic kick; never call no API change 'not logged in'."""
     history = player.get("history") or {}
     wars = int(history.get("wars") or 0)
@@ -120,6 +121,17 @@ def _kick_evidence(player: dict, policy: SelectionPolicy, preference: str, activ
         reasons.append(f"{missed} пропущенных атак за {wars} наблюдаемых войн при заявке «за»")
     if activity is not None and activity >= 7 * 24 and missed >= 2 and wars >= policy.min_kick_wars:
         reasons.append("Руководитель отметил отсутствие более недели; есть пропущенные атаки")
+    if (preference == "in" and wars >= max(5, policy.min_kick_wars)
+            and missed >= 2 and isinstance(reliable, (int, float)) and reliable < 75
+            and isinstance(history.get("averageStars"), (int, float))
+            and history["averageStars"] <= 1.4):
+        reasons.append("Слабая результативность и пропуски в нескольких наблюдаемых войнах")
+    if (preference == "in" and activity is not None and activity >= 7 * 24
+            and wars == 0 and observed_clan_wars >= 3):
+        reasons.append(
+            "Ручная отметка отсутствия более 7 дней; нет участия в сохранённых войнах. "
+            "Возможно, капитан не включал игрока в состав. Причину нужно проверить."
+        )
     # Being lower TH alone is never a kick criterion.
     return reasons
 
@@ -151,7 +163,9 @@ def build_selection(
             cwlPreference=binding.cwl_opt_in if binding else "unknown",
             warnings=warnings,
         )
-        player["kickReasons"] = _kick_evidence(player, policy, status, inactive_hours)
+        player["kickReasons"] = _kick_evidence(
+            player, policy, status, inactive_hours, int(data.get("observedWarCount") or 0)
+        )
         population.append(player)
     # Rank only by available data, preserving preference logic in separate buckets.
     population.sort(key=lambda p: (-p["selectionScore"], -(p.get("townHallLevel") or 0), str(p.get("tag"))))
@@ -172,12 +186,19 @@ def build_selection(
         if (wars >= policy.min_promotion_wars and isinstance(reliability, (int, float))
                 and reliability >= 95 and isinstance(average, (int, float)) and average >= 2.4
                 and int(hist.get("missedAttacks") or 0) == 0
-                and status == "in" and (hours is None or hours < policy.inactive_after_hours)):
+                and status == "in" and player.get("role") not in {"leader", "coLeader"}
+                and (hours is None or hours < policy.inactive_after_hours)):
+            player["promotionReasons"] = [
+                f"{wars} войн, {reliability}% использованных атак, {average} звезды в среднем, без пропусков"
+            ]
             groups["promotionCandidates"].append(player)
         cwl_hist = player.get("cwlHistory") or {}
         if (int(cwl_hist.get("wars") or 0) >= policy.min_cwl_bonus_wars
                 and (cwl_hist.get("reliabilityPct") or 0) >= 95
                 and (cwl_hist.get("averageStars") or 0) >= 2.4):
+            player["bonusReasons"] = [
+                f"{cwl_hist.get('wars')} сохранённых ЛВК, {cwl_hist.get('averageStars')} звезды/атаку"
+            ]
             groups["bonusCandidates"].append(player)
         if status == "out":
             groups["optedOut"].append(player)
