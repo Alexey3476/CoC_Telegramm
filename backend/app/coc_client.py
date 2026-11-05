@@ -191,7 +191,7 @@ async def get_cwl_summary(client: httpx.AsyncClient, redis: TTLCache) -> dict[st
     summary["standings"] = group_standings(group, wars, clan_tag)
     summary["clanTag"] = clan_tag
     by_tag = {war["_leagueWarTag"]: war for war in wars if war.get("_leagueWarTag")}
-    details = {(x.get("startTime"), x.get("enemy")): x for x in summary["rounds"]}
+
     slots = []
     for index, round_data in enumerate(group.get("rounds") or [], 1):
         our_war = next((by_tag[tag] for tag in round_data.get("warTags") or []
@@ -202,12 +202,22 @@ async def get_cwl_summary(client: httpx.AsyncClient, redis: TTLCache) -> dict[st
         if our_war:
             a, b = our_war.get("clan") or {}, our_war.get("opponent") or {}
             enemy = b if a.get("tag") == clan_tag else a
-            key = (our_war.get("startTime"), enemy.get("name") or "Соперник")
-            slot = dict(details.get(key) or {})
-            if not slot:
-                slot = {"result": "pending", "enemy": enemy.get("name") or "Соперник",
-                        "stars": None, "enemyStars": None}
-            slots.append({"round": index, **slot})
+            ours = a if a.get("tag") == clan_tag else b
+            stars = ours.get("stars")
+            enemy_stars = enemy.get("stars")
+            result = "pending"
+            if (our_war.get("state") == "warEnded"
+                and stars is not None and enemy_stars is not None
+                and ours.get("destructionPercentage") is not None
+                and enemy.get("destructionPercentage") is not None):
+                from app.cwl_standings import outcome
+                value = outcome(ours, enemy)
+                result = "win" if value > 0 else "loss" if value < 0 else "draw"
+            slots.append({"round": index,
+                          "enemy": enemy.get("name") or "Соперник",
+                          "result": result,
+                          "stars": stars, "enemyStars": enemy_stars,
+                          "startTime": our_war.get("startTime")})
         else:
             slots.append({"round": index, "result": "upcoming",
                           "enemy": "Ещё не известен", "stars": None, "enemyStars": None})
