@@ -16,3 +16,9 @@ def test_picker_never_shows_bound_players_including_own_alts():
 def test_picker_no_available_players_returns_empty():
     assert available_roster([{"tag": "#ONE", "name": "A"}], {"#ONE"}) == []
     assert available_roster([{"name": "No tag"}], set()) == []
+
+
+def test_picker_filters_tags_case_insensitively():
+    clan = [{"name": "Already linked", "tag": "#vu099jcr"},
+            {"name": "Available", "tag": "#FREE"}]
+    assert available_roster(clan, {"#VU099JCR"}) == [clan[1]]

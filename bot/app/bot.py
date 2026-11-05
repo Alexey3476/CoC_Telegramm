@@ -735,6 +735,15 @@ async def roster_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if kind != "player" or not 0 <= idx < len(members):
         return
     member = members[idx]
+    # The keyboard may be hours old: another user could have linked this tag
+    # since it was rendered. Never proceed to token verification for a taken tag.
+    storage: BindingsStorage = context.application.bot_data["storage"]
+    group_id = settings.clan_group_id or 0
+    if storage.get_user_id_by_tag(group_id, str(member["tag"])) is not None:
+        await update.callback_query.edit_message_text(
+            "🔒 Этот игровой аккаунт уже привязан. Обновляю список свободных игроков...")
+        await show_player_picker(update, context)
+        return
     await update.callback_query.edit_message_text(
         f"Выбран {member.get('name', '?')} · {member['tag']}. Проверяю аккаунт...")
     await process_binding(update, context, str(member["tag"]))

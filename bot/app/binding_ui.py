@@ -37,4 +37,6 @@ def roster_keyboard(members: list[dict], page: int = 0) -> InlineKeyboardMarkup:
 
 def available_roster(members: list[dict], linked_tags: set[str]) -> list[dict]:
     """Exclude all already verified game tags, regardless of Telegram owner."""
-    return [member for member in members if member.get("tag") and member["tag"] not in linked_tags]
+    taken = {str(tag).strip().upper() for tag in linked_tags}
+    return [member for member in members
+            if member.get("tag") and str(member["tag"]).strip().upper() not in taken]
