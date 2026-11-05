@@ -148,7 +148,7 @@ async def get_league_wars(
 async def get_war(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
     """Regular current war, or the current CWL war when the regular endpoint is empty."""
     regular = await get_regular_war(client, redis)
-    if regular.get("state") in {"preparation", "inWar", "warEnded"}:
+    if regular.get("state") in {"preparation", "inWar"}:
         return regular
     _, wars = await get_league_wars(client, redis)
     live = [war for war in wars if war.get("state") in {"preparation", "inWar"}]
@@ -196,11 +196,11 @@ async def get_clan_activity_report(client: httpx.AsyncClient, redis: TTLCache) -
         war_members = war_data.get("clan", {}).get("members", [])
         war_stars = sum(m.get("stars", 0) for m in war_members)
     
-    # Get members sorted by last seen (activity)
+    # The public API has no lastSeen field; only rank measured donations.
     members_by_activity = sorted(
-        members, 
-        key=lambda m: m.get("lastSeen", "2000-01-01T00:00:00.000Z"),
-        reverse=True
+        members,
+        key=lambda m: int(m.get("donations", 0)),
+        reverse=True,
     )
     
     # Most and least active
@@ -212,8 +212,9 @@ async def get_clan_activity_report(client: httpx.AsyncClient, redis: TTLCache) -
     war_attacks_remaining = 0
     if war_state == "inWar":
         war_members = war_data.get("clan", {}).get("members", [])
-        war_attacks_done = sum(1 for m in war_members if m.get("attacks") and len(m.get("attacks", [])) > 0)
-        war_attacks_remaining = len(war_members) - war_attacks_done
+        per_member = int(war_data.get("attacksPerMember") or 1)
+        war_attacks_done = sum(len(m.get("attacks") or []) for m in war_members)
+        war_attacks_remaining = sum(max(0, per_member - len(m.get("attacks") or [])) for m in war_members)
     
     return {
         "clanName": clan_data.get("name"),
@@ -237,7 +238,7 @@ async def get_clan_activity_report(client: httpx.AsyncClient, redis: TTLCache) -
                     "name": m.get("name"),
                     "tag": m.get("tag"),
                     "role": m.get("role"),
-                    "lastSeen": m.get("lastSeen"),
+                    "donations": m.get("donations", 0),
                     "trophies": m.get("trophies"),
                 }
                 for m in most_active
@@ -247,7 +248,7 @@ async def get_clan_activity_report(client: httpx.AsyncClient, redis: TTLCache) -
                     "name": m.get("name"),
                     "tag": m.get("tag"),
                     "role": m.get("role"),
-                    "lastSeen": m.get("lastSeen"),
+                    "donations": m.get("donations", 0),
                     "trophies": m.get("trophies"),
                 }
                 for m in least_active
@@ -304,11 +305,10 @@ async def get_clan_games(client: httpx.AsyncClient, redis: TTLCache) -> dict[str
     try:
         data = await fetch_with_cache(client, redis, cache_key, url)
         
-        # Get clan games info
+        # The official clan payload does not consistently expose Clan Games progress.
         clan_games = data.get("clanGames", {})
-        
         if not clan_games:
-            return {"currentGames": None}
+            return {"currentGames": None, "unsupported": True}
         
         state = clan_games.get("state", "notInProgress")
         start_time = clan_games.get("startTime", "N/A")
@@ -348,8 +348,8 @@ async def get_player_activity(client: httpx.AsyncClient, redis: TTLCache) -> dic
         # Donation score
         donations = member.get("donations", 0)
         
-        # Last seen - convert ISO timestamp to days ago
-        last_seen = member.get("lastSeen", "2000-01-01T00:00:00.000Z")
+        # CoC API does not report last online time.
+        last_seen = None
         
         # War attacks
         war_attacks = 0

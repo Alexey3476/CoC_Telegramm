@@ -130,13 +130,13 @@ def format_activity_report(payload: dict[str, Any]) -> str:
         }
         return role_map.get(role, role)
     
-    msg += "🟢 *Самые активные:*\n"
+    msg += "🟢 *Больше всего пожертвований (не время онлайн):*\n"
     for player in most_active[:5]:
         name = player.get("name", "Unknown")
         role = translate_role(player.get("role", "member"))
         msg += f"  • {name} ({role})\n"
     
-    msg += "\n🔴 *Неактивные:*\n"
+    msg += "\n📉 *Меньше всего пожертвований:*\n"
     for player in least_active[:5]:
         name = player.get("name", "Unknown")
         role = translate_role(player.get("role", "member"))
