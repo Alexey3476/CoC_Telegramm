@@ -288,10 +288,10 @@ async def send_or_edit_message(update: Update, text: str, parse_mode: str = Pars
 
 
 
+def extract_tag(text: str) -> str | None:
+    """Extract a valid-looking CoC player tag from private text."""
     match = TAG_EXTRACT_PATTERN.search(text.replace(" ", "").upper())
-    if not match:
-        return None
-    return match.group(0)
+    return match.group(0) if match else None
 
 
 async def handle_handler_exception(
@@ -1211,7 +1211,7 @@ async def war_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     tags_missing_attacks: set[str] = set()
     members_by_tag: dict[str, dict] = {}
     for member in clan_members:
-        if attacks_used(member) != 0 or not member.get("tag"):
+        if attacks_used(member) >= payload.get("attacksPerMember", 2) or not member.get("tag"):
             continue
         try:
             tag = normalize_tag(member["tag"])

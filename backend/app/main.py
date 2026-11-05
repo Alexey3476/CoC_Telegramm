@@ -4,7 +4,7 @@ from typing import AsyncIterator
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from redis.asyncio import Redis
+from app.cache import TTLCache
 
 from app.coc_client import (
     ForbiddenError,
@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         raise SystemExit(1)
     logger.info("Environment validation passed")
 
-    redis = Redis.from_url(settings.redis_url, decode_responses=True)
+    redis = TTLCache()
     timeout = httpx.Timeout(settings.request_timeout_seconds)
     headers = {"Authorization": f"Bearer {settings.coc_token}"}
     client = httpx.AsyncClient(headers=headers, timeout=timeout)
@@ -55,7 +55,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(lifespan=lifespan)
 
 
-def get_redis(request: Request) -> Redis:
+def get_redis(request: Request) -> TTLCache:
     return request.app.state.redis
 
 
@@ -130,9 +130,8 @@ async def war(request: Request):
 
 
 @app.get("/top-players")
-async def top_players(limit: int = 10, request: Request = None):
+async def top_players(request: Request, limit: int = 10):
     """Get top clan members by trophies."""
-    request = request or Request({})
     redis = get_redis(request)
     client = get_http_client(request)
     try:

@@ -5,7 +5,7 @@ import re
 from typing import Any
 
 import httpx
-from redis.asyncio import Redis
+from app.cache import TTLCache
 
 from app.cache import get_cached_json, set_cached_json
 from app.settings import settings
@@ -53,7 +53,7 @@ def encode_tag(tag: str) -> str:
 
 async def fetch_with_cache(
     client: httpx.AsyncClient,
-    redis: Redis,
+    redis: TTLCache,
     cache_key: str,
     url: str,
 ) -> dict[str, Any]:
@@ -89,28 +89,28 @@ async def fetch_with_cache(
     return payload
 
 
-async def get_clan(client: httpx.AsyncClient, redis: Redis) -> dict[str, Any]:
+async def get_clan(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
     clan_tag = normalize_tag(settings.coc_clan_tag)
     cache_key = f"clan:{clan_tag}"
     url = f"{settings.coc_api_base}/clans/{encode_tag(clan_tag)}"
     return await fetch_with_cache(client, redis, cache_key, url)
 
 
-async def get_player(client: httpx.AsyncClient, redis: Redis, tag: str) -> dict[str, Any]:
+async def get_player(client: httpx.AsyncClient, redis: TTLCache, tag: str) -> dict[str, Any]:
     normalized = normalize_tag(tag)
     cache_key = f"player:{normalized}"
     url = f"{settings.coc_api_base}/players/{encode_tag(normalized)}"
     return await fetch_with_cache(client, redis, cache_key, url)
 
 
-async def get_war(client: httpx.AsyncClient, redis: Redis) -> dict[str, Any]:
+async def get_war(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
     clan_tag = normalize_tag(settings.coc_clan_tag)
     cache_key = f"war:{clan_tag}"
     url = f"{settings.coc_api_base}/clans/{encode_tag(clan_tag)}/currentwar"
     return await fetch_with_cache(client, redis, cache_key, url)
 
 
-async def get_clan_members(client: httpx.AsyncClient, redis: Redis, limit: int = 50) -> dict[str, Any]:
+async def get_clan_members(client: httpx.AsyncClient, redis: TTLCache, limit: int = 50) -> dict[str, Any]:
     """Get clan members, sorted by trophies."""
     clan_data = await get_clan(client, redis)
     members = clan_data.get("memberList", [])
@@ -123,7 +123,7 @@ async def get_clan_members(client: httpx.AsyncClient, redis: Redis, limit: int =
     }
 
 
-async def get_clan_activity_report(client: httpx.AsyncClient, redis: Redis) -> dict[str, Any]:
+async def get_clan_activity_report(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
     """Get comprehensive clan activity report."""
     clan_tag = normalize_tag(settings.coc_clan_tag)
     
@@ -205,7 +205,7 @@ async def get_clan_activity_report(client: httpx.AsyncClient, redis: Redis) -> d
         }
     }
 
-async def get_clan_raids(client: httpx.AsyncClient, redis: Redis) -> dict[str, Any]:
+async def get_clan_raids(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
     """Get clan raids (capital games) information."""
     clan_tag = normalize_tag(settings.coc_clan_tag)
     cache_key = f"raids:{clan_tag}"
@@ -245,7 +245,7 @@ async def get_clan_raids(client: httpx.AsyncClient, redis: Redis) -> dict[str, A
         logger.exception("Failed to get clan raids")
         return {"currentRaid": None}
 
-async def get_clan_games(client: httpx.AsyncClient, redis: Redis) -> dict[str, Any]:
+async def get_clan_games(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
     """Get clan games information."""
     clan_tag = normalize_tag(settings.coc_clan_tag)
     cache_key = f"games:{clan_tag}"
@@ -280,7 +280,7 @@ async def get_clan_games(client: httpx.AsyncClient, redis: Redis) -> dict[str, A
         return {"currentGames": None}
 
 
-async def get_player_activity(client: httpx.AsyncClient, redis: Redis) -> dict[str, Any]:
+async def get_player_activity(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
     """Get clan members activity statistics."""
     clan_data = await get_clan(client, redis)
     members = clan_data.get("memberList", [])
@@ -332,7 +332,7 @@ async def get_player_activity(client: httpx.AsyncClient, redis: Redis) -> dict[s
     }
 
 
-async def get_next_war_analysis(client: httpx.AsyncClient, redis: Redis) -> dict[str, Any]:
+async def get_next_war_analysis(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
     """Analyze and rank members for next war based on:
     - War stars from last war
     - Player experience level
