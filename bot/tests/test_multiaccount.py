@@ -1,5 +1,4 @@
 import sqlite3
-from pathlib import Path
 
 import pytest
 
@@ -45,7 +44,7 @@ def test_delete_primary_promotes_alt_and_all_delete(tmp_path):
 
 def test_migration_of_existing_binding_preserves_primary(tmp_path):
     path = str(tmp_path / "legacy.db")
-    repo = BindingsStorage(path)
+    BindingsStorage(path)
     with sqlite3.connect(path) as c:
         c.execute("DELETE FROM linked_accounts")
     restarted = BindingsStorage(path)
