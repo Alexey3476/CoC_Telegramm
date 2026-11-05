@@ -13,7 +13,31 @@ LEAGUE_ORDER = {
 
 
 def _league_index(name: str) -> float | None:
-    lower = (name or "").lower()
+    """Parse current ranked leagues (Skeleton 1..Electro 33, Legend=34).
+
+    Preserve legacy names for stored older profile snapshots. Do not treat
+    an unrelated number in a league name as an accurate rating.
+    """
+    lower = (name or "").casefold()
+    if "legend" in lower:
+        return 34.0
+    current_groups = (
+        ("skeleton", 1, 3), ("barbarian", 4, 6), ("archer", 7, 9),
+        ("wizard", 10, 12), ("valkyrie", 13, 15), ("witch", 16, 18),
+        ("golem", 19, 21), ("p.e.k.k.a", 22, 24), ("pekka", 22, 24),
+        ("titan", 25, 27), ("dragon", 28, 30), ("electro", 31, 33),
+    )
+    for group, minimum, maximum in current_groups:
+        if group in lower:
+            matches = [int(m) for m in re.findall(r"\b(?:[1-9]|[12]\d|3[0-3])\b", lower)]
+            valid = [rank for rank in matches if minimum <= rank <= maximum]
+            if valid:
+                return float(valid[-1])
+            # Unknown division: retain a neutral estimate within this tier.
+            if group not in {"titan"} or not re.search(r"\b(i{1,3}|iv|v)\b", lower):
+                return float((minimum + maximum) / 2)
+    # Legacy leagues from older player profiles. These old numeric classes
+    # are only used when the new league is not recognized.
     for league, level in LEAGUE_ORDER.items():
         if league in lower:
             tier = re.search(r"\b(i{1,3}|iv|v)\b", lower)
@@ -31,10 +55,10 @@ def _peer_percentile(value: float | None, cohort: list[float]) -> float | None:
 
 
 def relative_strength(players: list[dict[str, Any]]) -> dict[str, dict]:
-    """TH-matched player-level/equipment/league percentiles within this clan.
+    """Within-TH percentiles using known hero, equipment, experience and league data.
 
-    The API provides no building levels. One-person TH cohorts have no defensible
-    relative ranking: keep 50 neutral and mark the source/coverage.
+    Experience level is a weak longevity proxy, NOT a building/defence snapshot.
+    A single-member TH cohort is neutral rather than spuriously maxed.
     """
     cohorts: dict[int, list[dict]] = defaultdict(list)
     for member in players:
@@ -45,12 +69,16 @@ def relative_strength(players: list[dict[str, Any]]) -> dict[str, dict]:
         heroes = [float(p["heroesLevel"]) for p in members if isinstance(p.get("heroesLevel"), (int, float))]
         equipment = [float(p["heroEquipmentScore"]) for p in members if isinstance(p.get("heroEquipmentScore"), (int, float))]
         leagues = [x for p in members if (x := _league_index(str(p.get("league") or ""))) is not None]
+        experience = [float(p["expLevel"]) for p in members
+                      if isinstance(p.get("expLevel"), (int, float))]
         for player in members:
             pairs = (
-                (70, _peer_percentile(float(player["heroesLevel"]), heroes)
+                (60, _peer_percentile(float(player["heroesLevel"]), heroes)
                  if isinstance(player.get("heroesLevel"), (int, float)) else None),
                 (20, _peer_percentile(float(player["heroEquipmentScore"]), equipment)
                  if isinstance(player.get("heroEquipmentScore"), (int, float)) else None),
+                (10, _peer_percentile(float(player["expLevel"]), experience)
+                 if isinstance(player.get("expLevel"), (int, float)) else None),
                 (10, _peer_percentile(_league_index(str(player.get("league") or "")), leagues)),
             )
             known = [(weight, val) for weight, val in pairs if val is not None]
@@ -59,7 +87,7 @@ def relative_strength(players: list[dict[str, Any]]) -> dict[str, dict]:
                 "relativeStrength": score,
                 "strengthCoverage": sum(weight for weight, _ in known),
                 "townHallPeers": len(members),
-                "method": "TH-matched clan peers; 70% heroes, 20% equipment, 10% league",
+                "method": "TH peers: 60% heroes, 20% equipment, 10% experience, 10% league; defence unavailable",
             }
     return out
 

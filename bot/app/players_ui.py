@@ -77,3 +77,61 @@ def back_to_roster(page: int = 0) -> InlineKeyboardMarkup:
          InlineKeyboardButton("🏆 Зал славы", callback_data="players:hall:0")],
         [InlineKeyboardButton("🏠 Штаб", callback_data="menu_home")],
     ])
+
+
+def ranking_page(data: dict, mode: str = "war", page: int = 0, per_page: int = 10) -> str:
+    """All clan players by calculated KV/CWL selection score, not trophy count."""
+    players = sorted(
+        data.get("allPlayers") or data.get("recommendedLineup") or [],
+        key=lambda m: (-float(m.get("selectionScore") or 0),
+                       -int(m.get("townHallLevel") or 0), str(m.get("name") or "")),
+    )
+    pages = max(1, (len(players) + per_page - 1) // per_page)
+    page = max(0, min(page, pages - 1))
+    lines = [
+        f"🏆 <b>Рейтинг игроков · {'ЛВК' if mode == 'cwl' else 'КВ'}</b>",
+        f"Игроков: {len(players)} · страница {page + 1}/{pages}",
+        "Рейтинг по вычисленному индексу, не по кубкам. Отказ от войны показан отдельно.",
+        "",
+    ]
+    for i in range(page * per_page, min((page + 1) * per_page, len(players))):
+        player = players[i]
+        name = html.escape(str(player.get("name") or "?")[:27])
+        league = html.escape(str(player.get("league") or "?")[:19])
+        role = {"leader": "👑", "coLeader": "🛡️", "admin": "⭐"}.get(
+            player.get("role"), "")
+        inactive = " ⛔" if player.get("eligibility") != "candidate" else ""
+        exp = player.get("expLevel")
+        exp_label = f" · ур.{exp}" if isinstance(exp, int) else ""
+        lines.append(
+            f"{i + 1}. {role}<b>{name}</b> · TH{player.get('townHallLevel') or '?'}"
+            f"{exp_label} · <b>{float(player.get('selectionScore') or 0):.1f}</b>{inactive}"
+        )
+        lines.append(f"   🏆 {league}")
+    lines.append(
+        "\nℹ️ Оборона и постройки недоступны в CoC API. Уровень опыта — "
+        "косвенный показатель, а звание — малый бонус, не доказательство силы."
+    )
+    return "\n".join(lines)[:4000]
+
+
+def ranking_keyboard(mode: str = "war", page: int = 0, total: int = 0,
+                     per_page: int = 10) -> InlineKeyboardMarkup:
+    pages = max(1, (total + per_page - 1) // per_page)
+    page = max(0, min(page, pages - 1))
+    rows = [[
+        InlineKeyboardButton("⚔️ КВ" + (" ✓" if mode == "war" else ""),
+                             callback_data="rank:mode:war"),
+        InlineKeyboardButton("🏆 ЛВК" + (" ✓" if mode == "cwl" else ""),
+                             callback_data="rank:mode:cwl"),
+    ]]
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀", callback_data=f"rank:page:{page-1}"))
+    if page + 1 < pages:
+        nav.append(InlineKeyboardButton("▶", callback_data=f"rank:page:{page+1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton("🔄 Обновить", callback_data=f"rank:mode:{mode}")])
+    rows.append([InlineKeyboardButton("🏠 Штаб", callback_data="menu_home")])
+    return InlineKeyboardMarkup(rows)

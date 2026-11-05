@@ -114,9 +114,9 @@ async def get_regular_war(client: httpx.AsyncClient, redis: TTLCache) -> dict[st
 
 
 async def get_league_wars(
-    client: httpx.AsyncClient, redis: TTLCache
+    client: httpx.AsyncClient, redis: TTLCache, own_only: bool = True,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Fetch current CWL group and this clan's round wars (bounded concurrency)."""
+    """Fetch current CWL wars; other clans are required for group standings."""
     clan_tag = normalize_tag(settings.coc_clan_tag)
     url = f"{settings.coc_api_base}/clans/{encode_tag(clan_tag)}/currentwar/leaguegroup"
     try:
@@ -128,7 +128,6 @@ async def get_league_wars(
         for tag in round_data.get("warTags", []):
             if tag and tag != "#0" and tag not in tags:
                 tags.append(tag)
-    # CWL normally has at most 28 wars in an eight-clan group.
     semaphore = asyncio.Semaphore(4)
 
     async def fetch_one(tag: str) -> dict[str, Any] | None:
@@ -138,8 +137,10 @@ async def get_league_wars(
                     client, redis, f"cwl-war:{tag}",
                     f"{settings.coc_api_base}/clanwarleagues/wars/{encode_tag(tag)}",
                 )
-                teams = (data.get("clan") or {}, data.get("opponent") or {})
-                return data if any(team.get("tag") == clan_tag for team in teams) else None
+                sides = (data.get("clan") or {}, data.get("opponent") or {})
+                if own_only and not any(side.get("tag") == clan_tag for side in sides):
+                    return None
+                return {**data, "_warTag": tag}
             except (NotFoundError, RateLimitError, ForbiddenError, RuntimeError, TimeoutError):
                 return None
 
@@ -147,42 +148,125 @@ async def get_league_wars(
     return group, [war for war in fetched if war is not None]
 
 
+def _cwl_result(own: dict, enemy: dict, state: str) -> str:
+    if state != "warEnded":
+        return "pending"
+    own_stars, enemy_stars = int(own.get("stars") or 0), int(enemy.get("stars") or 0)
+    own_damage = float(own.get("destructionPercentage") or 0)
+    enemy_damage = float(enemy.get("destructionPercentage") or 0)
+    if own_stars > enemy_stars or (own_stars == enemy_stars and own_damage > enemy_damage):
+        return "win"
+    if own_stars == enemy_stars and own_damage == enemy_damage:
+        return "draw"
+    return "loss"
+
+
 def summarize_cwl(group: dict[str, Any], wars: list[dict[str, Any]], clan_tag: str) -> dict[str, Any]:
-    """Our own observed CWL results; never invent the official league standings."""
+    """Provisional group table: stars plus 10 for a completed win, then destruction.
+
+    Missing wars and future rounds are never treated as losses or as zero-star
+    results. This calculation is not an official season-end placement.
+    """
+    group_rounds = group.get("rounds") or []
+    positions = {}
+    for number, round_data in enumerate(group_rounds, start=1):
+        for tag in round_data.get("warTags", []):
+            if tag and tag != "#0":
+                positions[tag] = number
+
+    seen_wars: set[tuple] = set()
+    unique_wars = []
+    for war in wars:
+        sides = (war.get("clan") or {}, war.get("opponent") or {})
+        identity = war.get("_warTag") or (war.get("startTime"), tuple(sorted(
+            str(side.get("tag") or "") for side in sides)))
+        if identity in seen_wars:
+            continue
+        seen_wars.add(identity)
+        unique_wars.append(war)
+
+    group_members: dict[str, dict] = {
+        clan["tag"]: {"tag": clan["tag"], "name": clan.get("name") or clan["tag"],
+                      "stars": 0, "bonusStars": 0, "destruction": 0.0, "wins": 0, "warsObserved": 0}
+        for clan in (group.get("clans") or []) if clan.get("tag")
+    }
     observed = []
-    seen = set()
-    for war in sorted(wars, key=lambda x: x.get("startTime") or ""):
-        own, enemy = war.get("clan") or {}, war.get("opponent") or {}
-        if enemy.get("tag") == clan_tag:
-            own, enemy = enemy, own
-        if own.get("tag") != clan_tag:
+    for war in unique_wars:
+        left, right = war.get("clan") or {}, war.get("opponent") or {}
+        if not left.get("tag") or not right.get("tag"):
             continue
-        identity = (war.get("startTime"), enemy.get("tag"))
-        if identity in seen:
-            continue
-        seen.add(identity)
-        s, e = int(own.get("stars") or 0), int(enemy.get("stars") or 0)
-        d = float(own.get("destructionPercentage") or 0) - float(enemy.get("destructionPercentage") or 0)
-        result = "pending"
-        if war.get("state") == "warEnded":
-            result = "win" if s > e or (s == e and d > 0) else ("draw" if s == e and d == 0 else "loss")
-        observed.append({
-            "enemy": enemy.get("name") or "Соперник", "result": result,
-            "stars": s, "enemyStars": e, "startTime": war.get("startTime"),
-        })
+        for side, opponent in ((left, right), (right, left)):
+            tag = side["tag"]
+            entry = group_members.setdefault(tag, {
+                "tag": tag, "name": side.get("name") or tag, "stars": 0,
+                "bonusStars": 0, "destruction": 0.0, "wins": 0, "warsObserved": 0,
+            })
+            entry["stars"] += int(side.get("stars") or 0)
+            entry["destruction"] += float(side.get("destructionPercentage") or 0)
+            entry["warsObserved"] += 1
+            if _cwl_result(side, opponent, war.get("state") or "") == "win":
+                entry["wins"] += 1
+                entry["bonusStars"] += 10
+        if left["tag"] == clan_tag or right["tag"] == clan_tag:
+            own, enemy = (left, right) if left["tag"] == clan_tag else (right, left)
+            observed.append({
+                "round": positions.get(war.get("_warTag")),
+                "enemy": enemy.get("name") or "Соперник",
+                "result": _cwl_result(own, enemy, war.get("state") or ""),
+                "stars": int(own.get("stars") or 0),
+                "enemyStars": int(enemy.get("stars") or 0),
+                "startTime": war.get("startTime"),
+            })
+
+    # Put our games in their real round order even if an intermediate API war
+    # tag has not been published. Older tests/snapshots have no _warTag.
+    observed.sort(key=lambda w: (w.get("round") or 99, w.get("startTime") or ""))
+    rounds = []
+    expected_rounds = max(7, len(group_rounds)) if group.get("state") != "notInWar" else len(group_rounds)
+    by_round = {r["round"]: r for r in observed if r.get("round") is not None}
+    for number in range(1, expected_rounds + 1):
+        found = by_round.get(number)
+        if found is None:
+            without_number = next((r for r in observed if r.get("round") is None
+                                   and r not in rounds), None)
+            found = without_number
+        rounds.append({**(found or {
+            "enemy": None, "result": "upcoming", "stars": None, "enemyStars": None,
+            "startTime": None,
+        }), "round": number})
+    for entry in group_members.values():
+        entry["totalStars"] = entry["stars"] + entry["bonusStars"]
+        entry["destruction"] = round(entry["destruction"], 2)
+    standings = sorted(group_members.values(), key=lambda c: (
+        -c["totalStars"], -c["destruction"], str(c["name"]).casefold()))
+    for i, member in enumerate(standings, start=1):
+        member["place"] = i
+    ours = next((item for item in standings if item["tag"] == clan_tag), None)
+    finished = sum(w.get("state") == "warEnded" for w in unique_wars)
+    known_tags = {tag for round_data in group_rounds for tag in round_data.get("warTags", [])
+                  if tag and tag != "#0"}
+    active_games = sum(w.get("state") in {"inWar", "warEnded"} for w in unique_wars)
     return {
         "state": group.get("state") or "notInWar",
-        "scheduledRounds": len(group.get("rounds") or []),
+        "scheduledRounds": expected_rounds,
         "observedRounds": len(observed),
         "wins": sum(x["result"] == "win" for x in observed),
         "draws": sum(x["result"] == "draw" for x in observed),
         "losses": sum(x["result"] == "loss" for x in observed),
-        "rounds": observed,
+        "rounds": rounds,
+        "standings": standings,
+        "predictedPlace": ours["place"] if ours and active_games else None,
+        "ourTotalStars": ours["totalStars"] if ours and active_games else None,
+        "completedWarCount": finished,
+        "observedWarCount": len(unique_wars),
+        "standingsProvisional": group.get("state") != "ended"
+                                or finished != len(unique_wars)
+                                or (bool(known_tags) and len(unique_wars) < len(known_tags)),
     }
 
 
 async def get_cwl_summary(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
-    group, wars = await get_league_wars(client, redis)
+    group, wars = await get_league_wars(client, redis, own_only=False)
     return summarize_cwl(group, wars, normalize_tag(settings.coc_clan_tag))
 
 
@@ -395,6 +479,7 @@ async def get_next_war_analysis(
     history: WarHistory | None = None,
     policy: SelectionStore | None = None,
     mode: str = "war",
+    size: int | None = None,
 ) -> dict[str, Any]:
     """Evidence-based lineup. Unknown history is missing data, not zero performance."""
     clan_data = await get_clan(client, redis)
@@ -429,9 +514,17 @@ async def get_next_war_analysis(
     try:
         war_data = await get_war(client, redis)
         current_state = war_data.get("state", "unknown")
-        suggested_size = max(5, min(50, int(war_data.get("teamSize") or 15)))
+        if mode == "war":
+            reported = int(war_data.get("teamSize") or 15)
+            suggested_size = reported if reported in range(15, 51, 5) else 15
     except (NotFoundError, ForbiddenError, RateLimitError, RuntimeError, TimeoutError):
         current_state = "unavailable"
+    if mode == "cwl":
+        suggested_size = 15
+    elif size is not None:
+        if size not in range(15, 51, 5):
+            raise ValueError("Regular-war size must be 15, 20, ... or 50")
+        suggested_size = size
     try:
         cwl_url = f"{settings.coc_api_base}/clans/{encode_tag(clan_tag)}/currentwar/leaguegroup"
         cwl_data = await fetch_with_cache(client, redis, f"cwl:{clan_tag}", cwl_url)
@@ -524,7 +617,7 @@ async def get_next_war_analysis(
         "observedWarCount": len(archived),
         "analysisFactors": {
             "lastWarPerformance": "Только сохранённые завершённые войны: пропуски, звёзды и уровень цели. Неизвестное не считается нулём.",
-            "combatReadiness": "Сравнение уровней героев, снаряжения и лиги только среди участников с той же ратушей; без сверстников оценка нейтральная.",
+            "combatReadiness": "Герои, снаряжение, опыт и лига относительно игроков с той же TH. Для ЛВК TH отдельно даёт преимущество; защита не доступна API.",
             "warReadiness": "Сравнивай вклад компонентов в таблице весов. Пропуски и уровень цели учитываются только при наличии истории.",
             "sortedBy": "Категория доступности, затем взвешенный балл по имеющимся сигналам",
         },
