@@ -130,7 +130,6 @@ def lineup_keyboard(stage: str = "main", page: int = 0, data: dict | None = None
     ]
     if stage == "details" and data:
         members = data.get("recommendedLineup") or []
-        size = max(1, min(25, int(data.get("recommendedSize") or 15)))
         offset = page * 6
         for idx in range(offset, min(offset + 6, len(members))):
             member = members[idx]

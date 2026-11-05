@@ -5,6 +5,7 @@ import logging
 import re
 from urllib.parse import quote
 from datetime import datetime, timedelta, timezone, time
+from zoneinfo import ZoneInfo
 from typing import Any
 
 import httpx
@@ -24,7 +25,7 @@ from telegram.helpers import escape_markdown
 from app.backend_client import build_url, fetch_json
 from app.bindings_storage import Binding, BindingsStorage
 from app.settings import env_snapshot, settings, settings_snapshot, validate_settings
-from app.ui import format_war_message, format_raid_message, lineup_message, lineup_keyboard, game_time, safe_tag_name, normalize_name
+from app.ui import format_war_message, format_raid_message, lineup_message, lineup_keyboard, safe_tag_name, normalize_name
 
 log_level = logging.DEBUG if settings.debug else logging.INFO
 logging.basicConfig(level=log_level, format="%(levelname)s %(name)s %(message)s")
@@ -386,10 +387,8 @@ async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_T
         # User is bound, offer menu instead
         context.user_data.pop("awaiting_tag", None)  # Clear any waiting state
         await update.message.reply_text(
-            f"✅ Вы привязаны как {html.escape(binding.coc_player_tag)}\n\n"
-            f"Что дальше?",
+            f"✅ Вы привязаны как {binding.coc_player_tag}.\nВыбери раздел:",
             reply_markup=main_menu_keyboard(),
-            parse_mode=ParseMode.MARKDOWN,
         )
         return
     
@@ -598,7 +597,7 @@ async def process_binding(
     raw_tag: str,
     verified: bool = False,
 ) -> None:
-    if not update.effective_user or not update.message:
+    if not update.effective_user or not update.effective_message:
         return
     context.user_data["awaiting_tag"] = False
     logger.info(
@@ -610,7 +609,7 @@ async def process_binding(
     try:
         tag = normalize_tag(raw_tag)
     except InvalidTagError:
-        await update.message.reply_text("Invalid player tag format.")
+        await update.effective_message.reply_text("Invalid player tag format.")
         return
     logger.info(
         "Bind normalized user_id=%s tag=%s",
@@ -632,33 +631,33 @@ async def process_binding(
             status = exc.response.status_code
             logger.warning("Backend error validating player: %s", exc)
             if status == 404:
-                await update.message.reply_text("Player tag not found.")
+                await update.effective_message.reply_text("Player tag not found.")
             elif status in {401, 403}:
-                await update.message.reply_text(
+                await update.effective_message.reply_text(
                     "Backend authentication issue. Check API token/IP."
                 )
             else:
-                await update.message.reply_text(binding_error_message(status))
+                await update.effective_message.reply_text(binding_error_message(status))
             return
         except httpx.RequestError as exc:
             logger.warning("Backend unreachable during bind: %s", exc)
-            await update.message.reply_text("Backend is unreachable. Please try again later.")
+            await update.effective_message.reply_text("Backend is unreachable. Please try again later.")
             return
         except Exception:  # noqa: BLE001
             logger.exception("Unhandled error during bind validation")
-            await update.message.reply_text("Unexpected error occurred. Please try again.")
+            await update.effective_message.reply_text("Unexpected error occurred. Please try again.")
             return
     if settings.enforce_clan_membership:
         if not settings.coc_clan_tag:
             logger.error("Clan membership enforcement enabled without COC_CLAN_TAG set")
-            await update.message.reply_text(
+            await update.effective_message.reply_text(
                 "Binding unavailable: clan configuration missing."
             )
             return
         player_clan = payload.get("clan", {}).get("tag")
         try:
             if not player_clan or normalize_tag(player_clan) != normalize_tag(settings.coc_clan_tag):
-                await update.message.reply_text("Player is not in this clan.")
+                await update.effective_message.reply_text("Player is not in this clan.")
                 logger.info(
                     "Bind rejected user_id=%s tag=%s clan_tag=%s",
                     update.effective_user.id,
@@ -667,12 +666,12 @@ async def process_binding(
                 )
                 return
         except InvalidTagError:
-            await update.message.reply_text("Player is not in this clan.")
+            await update.effective_message.reply_text("Player is not in this clan.")
             return
     if settings.require_player_verification and not verified:
         context.user_data["pending_coc_tag"] = tag
         context.user_data["awaiting_player_token"] = True
-        await update.message.reply_text(
+        await update.effective_message.reply_text(
             "🔐 Для проверки владения аккаунтом открой Clash of Clans → "
             "Настройки → Ещё настройки → API Token и пришли токен игрока сюда.\n"
             "Это НЕ ключ разработчика. Сообщение с токеном бот попытается удалить.",
@@ -683,7 +682,7 @@ async def process_binding(
     storage: BindingsStorage = context.application.bot_data["storage"]
     owner_id = storage.get_user_id_by_tag(settings.clan_group_id or 0, tag)
     if owner_id is not None and owner_id != update.effective_user.id:
-        await update.message.reply_text(
+        await update.effective_message.reply_text(
             "Игровой аккаунт уже привязан к другому пользователю. Обратитесь к администратору."
         )
         return
@@ -700,7 +699,7 @@ async def process_binding(
         storage.upsert_binding(binding)
     except Exception as exc:  # noqa: BLE001
         logger.error("Bind DB write failed user_id=%s error=%s", update.effective_user.id, exc)
-        await update.message.reply_text("Internal error while saving binding.")
+        await update.effective_message.reply_text("Internal error while saving binding.")
         return
     logger.info(
         "Bind saved user_id=%s group_id=%s tag=%s",
@@ -711,7 +710,7 @@ async def process_binding(
     mention = format_mention(update.effective_user.id, update.effective_user.full_name)
     try:
         if settings.clan_group_id is None:
-            await update.message.reply_text(
+            await update.effective_message.reply_text(
                 f"Bound {mention} to {html.escape(tag)} successfully.\n"
                 "Clan group is not configured yet. "
                 "Ask an admin to set CLAN_GROUP_ID (use /chatid in the group).",
@@ -731,7 +730,7 @@ async def process_binding(
             settings.clan_group_id,
             expire_at.isoformat(),
         )
-        await update.message.reply_text(
+        await update.effective_message.reply_text(
             f"Bound {mention} to {html.escape(tag)} successfully.\n"
             f"Here is your invite link (valid for {settings.invite_ttl_minutes} minutes):\n"
             f"{invite.invite_link}",
@@ -740,7 +739,7 @@ async def process_binding(
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("Invite creation failed user_id=%s error=%s", update.effective_user.id, exc)
-        await update.message.reply_text(
+        await update.effective_message.reply_text(
             f"Bound {mention} to {html.escape(tag)} successfully.",
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
@@ -853,6 +852,14 @@ async def bind_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         logger.exception("Failed to handle bind_cancel callback")
 
 
+async def private_text_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Ensure a private message is processed only once."""
+    if context.user_data.get("awaiting_tag") or context.user_data.get("awaiting_player_token"):
+        await capture_tag(update, context)
+    else:
+        await handle_private_message(update, context)
+
+
 async def capture_tag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.effective_user:
         return
@@ -874,9 +881,7 @@ async def capture_tag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             return
         # Only clear awaiting_tag after successful processing
         await process_binding(update, context, extracted)
-        # Clear only after successful binding
-        context.user_data["awaiting_tag"] = False
-        context.user_data["binding_offered"] = False  # Reset so menu shows next time
+        context.user_data["binding_offered"] = False
     except Exception:  # noqa: BLE001
         logger.exception("Failed to capture tag message")
         # Don't clear awaiting_tag - let user try again
@@ -1629,21 +1634,15 @@ async def main() -> None:
     application.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
     application.add_handler(CallbackQueryHandler(lineup_callback, pattern=r"^lineup:(main|bench|details|about|player|refresh):[0-9]+$"))
     
-    # Tag capture handler - must be first (highest priority) to handle tag input during binding
+    # One router avoids two handlers replying to a successful token message.
     application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, capture_tag),
+        MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, private_text_router),
         group=0,
     )
-    
-    # Private message handler - offer binding to new users (group=1 to run after tag capture)
-    application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_private_message),
-        group=1,
-    )
-    
+
     # AI mention handler: replies when the bot is mentioned or replied-to (group=2 to run last)
     application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, ai_reply_handler),
+        MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, ai_reply_handler),
         group=2,
     )
     application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, verify_new_members))

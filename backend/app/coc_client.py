@@ -255,27 +255,20 @@ async def get_clan_activity_report(client: httpx.AsyncClient, redis: TTLCache) -
     }
 
 async def get_clan_raids(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
-    """Get clan raids (capital games) information."""
+    """Return the latest real raid season, including completed results."""
     clan_tag = normalize_tag(settings.coc_clan_tag)
-    cache_key = f"raids:{clan_tag}"
-    url = f"{settings.coc_api_base}/clans/{encode_tag(clan_tag)}/capitalraidseasons"
-    
-    data = await fetch_with_cache(client, redis, cache_key, url)
-    items = data.get("items", [])
+    data = await fetch_with_cache(
+        client, redis, f"raids:{clan_tag}",
+        f"{settings.coc_api_base}/clans/{encode_tag(clan_tag)}/capitalraidseasons",
+    )
+    items = data.get("items") or []
     if not items:
         return {"currentRaid": None}
+    latest = items[0]
+    fields = ("state", "startTime", "endTime", "capitalTotalLoot", "raidsCompleted",
+              "totalAttacks", "offensiveReward", "defensiveReward", "members")
+    return {"currentRaid": {key: latest[key] for key in fields if key in latest}}
 
-    current = items[0]
-    raid_info = {
-        "state": current.get("state", "unknown"),
-        "capitalName": "Capital Raid",
-        "startTime": current.get("startTime", "N/A"),
-        "endTime": current.get("endTime", "N/A"),
-    }
-    if raid_info["state"] == "ongoing":
-        resources = (current.get("clan") or {}).get("resources", [])
-        raid_info["clan"] = {"resources": resources}
-    return {"currentRaid": raid_info}
 
 async def get_clan_games(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
     """Report that Clan Games progress is not exposed by the public API."""
