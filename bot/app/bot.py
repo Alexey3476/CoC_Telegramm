@@ -294,7 +294,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/accounts — мои аккаунты и твинки\n"
         "/primary #ТЕГ — выбрать основной\n"
         "/unlink #ТЕГ — удалить одну привязку\n"
-        "/cwlopt in/out — согласие на ЛВК\n"
         "/weights — таблица весов\n"
         "/lastseen, /setweight, /adminunlink — для руководства\n"
         "/grouplink — получить приглашение\n"
@@ -320,7 +319,6 @@ async def sync_bot_commands(bot) -> None:
     await bot.set_my_commands(
         base + [BotCommand("bind", "🔐 Добавить аккаунт"),
                 BotCommand("accounts", "👥 Мои аккаунты"),
-                BotCommand("cwlopt", "✅ Согласие на ЛВК"),
                 BotCommand("weights", "📊 Веса отбора"),
                 BotCommand("grouplink", "🔗 Ссылка в группу")],
         scope=BotCommandScopeAllPrivateChats(),
@@ -352,6 +350,8 @@ async def send_or_edit_message(
     try:
         return await sender(text, parse_mode=parse_mode, reply_markup=reply_markup)
     except BadRequest as exc:
+        if "message is not modified" in str(exc).lower():
+            return update.callback_query.message if update.callback_query else None
         # Telegram may reject a name containing unescaped Markdown or HTML.
         # Never mask unrelated Telegram errors such as permissions or invalid chat IDs.
         if parse_mode is None or "can't parse entities" not in str(exc).lower():
@@ -947,65 +947,28 @@ async def admin_unlink(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
-async def cwl_opt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Independent CWL participation switch for the owner's verified account."""
-    if not update.message or not update.effective_user or not ensure_private_chat(update):
-        return
-    storage: BindingsStorage = context.application.bot_data["storage"]
-    bound = storage.get_user_accounts(settings.clan_group_id or 0, update.effective_user.id)
-    if not bound:
-        await update.message.reply_text("Сначала /bind.")
-        return
-    if not context.args or context.args[0].lower() not in {"in", "out", "unknown"}:
-        await update.message.reply_text(
-            "Согласие на ЛВК отдельно от КВ в самой игре.\n"
-            "/cwlopt in [#ТЕГ] — согласен\n"
-            "/cwlopt out [#ТЕГ] — не участвую\n"
-            "/cwlopt unknown [#ТЕГ] — ещё не решил"
-        )
-        return
-    pref = context.args[0].lower()
-    try:
-        tag = normalize_tag(context.args[1]) if len(context.args) > 1 else bound[0].coc_player_tag
-    except InvalidTagError:
-        await update.message.reply_text("Неверный игровой тег.")
-        return
-    if tag not in {account.coc_player_tag for account in bound}:
-        await update.message.reply_text("Можно изменять статус CWL только своих проверенных аккаунтов.")
-        return
-    try:
-        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
-            response = await client.post(build_url(f"/selection/cwl/{encode_tag(tag)}"),
-                                         json={"preference": pref})
-            response.raise_for_status()
-    except (httpx.RequestError, httpx.HTTPStatusError):
-        logger.warning("Could not save CWL preference user_id=%s", update.effective_user.id)
-        await update.message.reply_text("Сохранение статуса CWL недоступно.")
-        return
-    await update.message.reply_text(
-        f"Для {tag}: согласие на ЛВК = {pref}. Флажок участия в КВ внутри игры не изменён."
-    )
-
-
 async def weights(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    mode = (context.args or ["war"])[0].lower()
+    if mode not in {"war", "cwl"}:
+        mode = "war"
     try:
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
-            data = await fetch_json(client, "/selection/weights")
-        values = data.get("weights") or {}
+            response = await client.get(build_url("/selection/weights"), params={"mode": mode})
+            response.raise_for_status()
+            values = response.json().get("weights") or {}
     except (httpx.HTTPStatusError, httpx.RequestError):
-        await send_or_edit_message(update, "Не удалось загрузить таблицу весов.")
+        await send_or_edit_message(update, "Не удалось загрузить веса отбора.")
         return
-    labels = [("combat", "🏰 Сила TH, героев, экипировки"),
-              ("reliability", "🎯 Использование атак"),
-              ("performance", "⭐ Результаты против целей"),
-              ("participation", "✅ Согласие на войну"),
-              ("activity", "🕒 Последний вход (ручная отметка)")]
-    lines = ["📊 <b>Веса следующей войны</b>", ""]
-    for key, label in labels:
-        lines.append(f"{label}: <b>{float(values.get(key, 0)):g}%</b>")
-    lines += ["", "Сумма: 100%. Недоступные показатели не приравниваются к нулю.",
-              "Команда руководства: /setweight combat 35",
-              "Вес участия в КВ основан на CoC API, в CWL — на согласии через Telegram."]
+    labels = [("strength", "🏰 Сила относительно TH и лиги"),
+              ("discipline", "🎯 Дисциплина атак"),
+              ("quality", "⭐ Качество атак с учётом цели"),
+              ("role", "🛡️ Звание CoC")]
+    lines = [f"📊 <b>Веса {'ЛВК' if mode == 'cwl' else 'КВ'}</b>", ""]
+    for key, name in labels:
+        lines.append(f"{name}: <b>{float(values.get(key, 0)):g}%</b>")
+    lines += ["", "Сумма: 100%. Красная отметка CoC запрещает КВ и ЛВК.",
+              "Нет истории: низкая уверенность, не ноль эффективности.",
+              "Руководителям: /setweight cwl quality 45"]
     await send_or_edit_message(update, "\n".join(lines), parse_mode=ParseMode.HTML)
 
 
@@ -1013,28 +976,33 @@ async def set_weight(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not update.message or not update.effective_user or not ensure_private_chat(update):
         return
     if not await has_captain_access(update, context):
-        await update.message.reply_text("Настраивать веса может только лидер или соруководитель.")
+        await update.message.reply_text("Настраивать веса может только лидер или соруководитель CoC.")
         return
-    if len(context.args) != 2:
-        await update.message.reply_text("Пример: /setweight combat 35\n"
-                                        "Поля: combat reliability performance participation activity")
+    if len(context.args) != 3:
+        await update.message.reply_text("Пример: /setweight war quality 40\n"
+                                        "war/cwl; strength discipline quality role.")
+        return
+    mode, metric, value_s = (v.lower() for v in context.args)
+    if mode not in {"war", "cwl"} or metric not in {"strength", "discipline", "quality", "role"}:
+        await update.message.reply_text("Неверный режим или метрика.")
         return
     try:
-        value = float(context.args[1])
+        value = float(value_s)
         if not 0 <= value <= 100:
             raise ValueError
     except ValueError:
-        await update.message.reply_text("Вес должен быть числом от 0 до 100%.")
+        await update.message.reply_text("Нужен процент от 0 до 100.")
         return
     try:
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
-            resp = await client.post(build_url("/selection/weights"),
-                                     json={"metric": context.args[0].lower(), "value": value})
-            resp.raise_for_status()
+            response = await client.post(build_url("/selection/weights"),
+                                         json={"mode": mode, "metric": metric, "value": value})
+            response.raise_for_status()
     except (httpx.HTTPStatusError, httpx.RequestError):
-        await update.message.reply_text("Не удалось обновить вес; проверь название метрики.")
+        await update.message.reply_text("Не удалось сохранить веса.")
         return
-    await update.message.reply_text("Вес изменён, остальные пропорционально пересчитаны до 100%.")
+    await update.message.reply_text(f"✅ Веса {mode.upper()} обновлены.")
+    context.args = [mode]
     await weights(update, context)
 
 
@@ -1941,7 +1909,6 @@ async def main() -> None:
     application.add_handler(CommandHandler("primary", primary_account))
     application.add_handler(CommandHandler("unlink", unlink))
     application.add_handler(CommandHandler("adminunlink", admin_unlink))
-    application.add_handler(CommandHandler("cwlopt", cwl_opt))
     application.add_handler(CommandHandler("weights", weights))
     application.add_handler(CommandHandler("setweight", set_weight))
     application.add_handler(CommandHandler("lastseen", last_seen_report))
@@ -1955,7 +1922,7 @@ async def main() -> None:
     application.add_handler(CallbackQueryHandler(roster_callback, pattern=r"^pick:(manual|page|player):[0-9]+$"))
     application.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
     application.add_handler(CallbackQueryHandler(
-        lineup_callback, pattern=r"^lineup:(main|bench|details|about|player|refresh|inactive|optout|needs_review|kick|promotion|bonus|weights):[0-9]+$|^lineup:mode:(war|cwl)$"
+        lineup_callback, pattern=r"^lineup:(main|bench|details|about|player|refresh|inactive|optout|needs_review|cwl_excluded|twinks|kick|promotion|bonus|weights):[0-9]+$|^lineup:mode:(war|cwl)$"
     ))
     
     # One router avoids two handlers replying to a successful token message.
