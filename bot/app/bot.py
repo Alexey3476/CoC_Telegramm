@@ -575,6 +575,26 @@ async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.exception("Failed to reply to /ping")
 
 
+async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    try:
+        menu_text = (
+            "📋 *Menu*\n\n"
+            "🏰 */clan* - Get clan information\n"
+            "👤 */player* <tag> - Get player information\n"
+            "⚔️ */war* - Get current war info\n"
+            "🔗 */bind* <tag> - Bind your player tag\n"
+            "🔓 */unbind* - Unbind your player tag\n"
+            "🏷️ */mytag* - Show your bound tag\n"
+            "🔔 */ping* - Check bot status\n"
+            "⚙️ */settings* - Show bot settings\n"
+        )
+        await update.message.reply_text(menu_text, parse_mode=ParseMode.MARKDOWN)
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to reply to /menu")
+
+
 async def bind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.effective_user:
         return
