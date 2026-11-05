@@ -261,7 +261,8 @@ def main_menu_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
          InlineKeyboardButton("🏰 Клан", callback_data="menu_clan")],
         [InlineKeyboardButton("👤 Профиль", callback_data="menu_profile"),
          InlineKeyboardButton("🔐 Привязка", callback_data="bind_start")],
-        [InlineKeyboardButton("❓ Справка", callback_data="menu_help")],
+        [InlineKeyboardButton("📈 Развитие", callback_data="menu_progress"),
+         InlineKeyboardButton("❓ Справка", callback_data="menu_help")],
     ])
 
 
@@ -276,6 +277,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/war — текущая война и атаки\n"
         "/nextwar — подбор состава и история\n"
         "/cwl — результаты ЛВК\n"
+        "/progress — развитие моего аккаунта\n"
         "/clan — данные клана\n"
         "/topplayers — рейтинг активности\n"
         "/raids — рейды столицы\n"
@@ -297,6 +299,7 @@ async def sync_bot_commands(bot) -> None:
             BotCommand("nextwar", "📋 Следующий состав"),
          BotCommand("cwl", "🏆 Результаты CWL"),
             BotCommand("cwl", "🏆 Лига CWL"),
+            BotCommand("progress", "📈 Прогресс игрока"),
             BotCommand("profile", "👤 Мой профиль"),
             BotCommand("clan", "🏰 Информация о клане"),
             BotCommand("help", "❓ Помощь")]
@@ -806,6 +809,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "menu_war": war,
         "menu_nextwar": next_war_analysis,
         "menu_cwl": cwl,
+        "menu_progress": progress,
         "menu_player": player,
         "menu_profile": player,
         "menu_help": help_command,
@@ -1461,6 +1465,45 @@ async def ai_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await update.message.reply_text(safe_reply)
 
 
+async def progress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Observed development between real daily CoC profile snapshots."""
+    if not update.effective_user:
+        return
+    storage: BindingsStorage = context.application.bot_data["storage"]
+    binding = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
+    if not binding:
+        await send_or_edit_message(update, "Сначала привяжи аккаунт через /bind.")
+        return
+    try:
+        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+            data = await fetch_json(client, f"/progress/{encode_tag(binding.coc_player_tag)}")
+        lines = ["📈 <b>Развитие аккаунта</b>",
+                 html.escape(str(data.get("name") or binding.coc_player_tag)),
+                 f"Снимок: {data.get('snapshotDay')}"]
+        if not data.get("historyAvailable"):
+            lines.append("\nПервый снимок сохранён. Сравнение появится после следующего дня.")
+        else:
+            lines.append(f"Сравнение с: {data.get('comparisonDay')}")
+            changes = data.get("changes") or {}
+            names = {"townHallLevel": "Ратуша", "expLevel": "Опыт",
+                     "bestTrophies": "Рекорд кубков", "warStars": "Военные звёзды",
+                     "clanCapitalContributions": "Вклад в столицу"}
+            for key, label in names.items():
+                if key in changes:
+                    delta = changes[key]
+                    lines.append(f"• {label}: {delta['from']} → {delta['to']}")
+            for field, label in (("heroes", "Герои"), ("heroEquipment", "Снаряжение")):
+                for item, delta in changes.get(field, {}).items():
+                    lines.append(f"• {label}: {html.escape(item)} {delta['from']} → {delta['to']}")
+            if not changes:
+                lines.append("Изменений относительно предыдущего дня не найдено.")
+        lines.append("\nℹ️ Только изменения, подтверждённые API; не таймеры улучшений.")
+        await send_or_edit_message(update, "\n".join(lines)[:4000], parse_mode=ParseMode.HTML)
+    except (httpx.RequestError, httpx.HTTPStatusError):
+        logger.warning("Player progress unavailable")
+        await send_or_edit_message(update, "Не удалось получить историю развития.")
+
+
 async def cwl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message and not update.callback_query:
         return
@@ -1550,6 +1593,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("war", war))
     application.add_handler(CommandHandler("nextwar", next_war_analysis))
     application.add_handler(CommandHandler("cwl", cwl))
+    application.add_handler(CommandHandler("progress", progress))
     application.add_handler(CommandHandler("raids", clan_raids))
     application.add_handler(CommandHandler("games", clan_games))
     application.add_handler(CommandHandler("ping", ping))

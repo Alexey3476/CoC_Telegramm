@@ -34,3 +34,7 @@ War snapshots are sampled locally every five minutes, including clan war league 
 - War lineup selection is paginated and labels incomplete historical evidence.
 - Verified regular group members receive CoC nickname tags on join and daily at 09:00 Berlin time. Grant Manage Tags permission. Admin titles are never overwritten.
 - Telegram bot token URLs and exception logging are redacted. Revoke any previously exposed token.
+
+## Development snapshots
+
+Daily public player-profile snapshots are saved in `/data/player_progress.db` without credentials. `/progress` compares hero, equipment, Town Hall and documented lifetime counters with the previous saved day. No active upgrade timers are inferred.
