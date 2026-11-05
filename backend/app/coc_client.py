@@ -114,7 +114,7 @@ async def get_regular_war(client: httpx.AsyncClient, redis: TTLCache) -> dict[st
 
 
 async def get_league_wars(
-    client: httpx.AsyncClient, redis: TTLCache
+    client: httpx.AsyncClient, redis: TTLCache, *, include_all: bool = False
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Fetch current CWL group and this clan's round wars (bounded concurrency)."""
     clan_tag = normalize_tag(settings.coc_clan_tag)
@@ -139,7 +139,9 @@ async def get_league_wars(
                     f"{settings.coc_api_base}/clanwarleagues/wars/{encode_tag(tag)}",
                 )
                 teams = (data.get("clan") or {}, data.get("opponent") or {})
-                return data if any(team.get("tag") == clan_tag for team in teams) else None
+                if include_all or any(team.get("tag") == clan_tag for team in teams):
+                    return {**data, "_leagueWarTag": tag}
+                return None
             except (NotFoundError, RateLimitError, ForbiddenError, RuntimeError, TimeoutError):
                 return None
 
@@ -182,8 +184,35 @@ def summarize_cwl(group: dict[str, Any], wars: list[dict[str, Any]], clan_tag: s
 
 
 async def get_cwl_summary(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
-    group, wars = await get_league_wars(client, redis)
-    return summarize_cwl(group, wars, normalize_tag(settings.coc_clan_tag))
+    from app.cwl_standings import group_standings
+    group, wars = await get_league_wars(client, redis, include_all=True)
+    clan_tag = normalize_tag(settings.coc_clan_tag)
+    summary = summarize_cwl(group, wars, clan_tag)
+    summary["standings"] = group_standings(group, wars, clan_tag)
+    summary["clanTag"] = clan_tag
+    by_tag = {war["_leagueWarTag"]: war for war in wars if war.get("_leagueWarTag")}
+    details = {(x.get("startTime"), x.get("enemy")): x for x in summary["rounds"]}
+    slots = []
+    for index, round_data in enumerate(group.get("rounds") or [], 1):
+        our_war = next((by_tag[tag] for tag in round_data.get("warTags") or []
+                        if tag in by_tag and any(
+                            (side or {}).get("tag") == clan_tag
+                            for side in (by_tag[tag].get("clan"), by_tag[tag].get("opponent"))
+                        )), None)
+        if our_war:
+            a, b = our_war.get("clan") or {}, our_war.get("opponent") or {}
+            enemy = b if a.get("tag") == clan_tag else a
+            key = (our_war.get("startTime"), enemy.get("name") or "Соперник")
+            slot = dict(details.get(key) or {})
+            if not slot:
+                slot = {"result": "pending", "enemy": enemy.get("name") or "Соперник",
+                        "stars": None, "enemyStars": None}
+            slots.append({"round": index, **slot})
+        else:
+            slots.append({"round": index, "result": "upcoming",
+                          "enemy": "Ещё не известен", "stars": None, "enemyStars": None})
+    summary["rounds"] = slots
+    return summary
 
 
 def orient_war_for_clan(war: dict[str, Any], clan_tag: str) -> dict[str, Any]:
