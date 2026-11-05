@@ -269,7 +269,7 @@ def main_menu_keyboard(user_id: int | None = None, captain: bool = False) -> Inl
         [InlineKeyboardButton("❓ Справка", callback_data="menu_help")],
     ]
     if captain:
-        rows.append([InlineKeyboardButton("📋 Капитанский отчёт", callback_data="menu_captain")])
+        rows.append([InlineKeyboardButton("🛡️ Управление кланом", callback_data="menu_staff")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -295,6 +295,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/primary #ТЕГ — выбрать основной\n"
         "/unlink #ТЕГ — удалить одну привязку\n"
         "/weights — таблица весов\n"
+        "/staff — меню главы и соруководителей\n"
         "/lastseen, /setweight, /adminunlink — для руководства\n"
         "/grouplink — получить приглашение\n"
         "/unbind — отвязать аккаунт\n"
@@ -312,6 +313,7 @@ async def sync_bot_commands(bot) -> None:
             BotCommand("nextwar", "📋 Следующий состав"),
             BotCommand("cwl", "🏆 Лига CWL"),
             BotCommand("progress", "📈 Прогресс игрока"),
+            BotCommand("staff", "🛡️ Управление кланом"),
             BotCommand("profile", "👤 Мой профиль"),
             BotCommand("clan", "🏰 Информация о клане"),
             BotCommand("help", "❓ Помощь")]
@@ -425,6 +427,55 @@ async def has_captain_access(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return any(is_captain(members, account.coc_player_tag) for account in bindings)
     except (httpx.RequestError, httpx.HTTPStatusError):
         return False
+
+
+async def staff(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """CoC-leadership-only actions, based on ANY of the owner's verified alts."""
+    if not await has_captain_access(update, context):
+        await send_or_edit_message(update, "🛡️ Доступ только главе и соруководителям CoC.")
+        return
+    rows = [
+        [InlineKeyboardButton("⚔️ КВ · состав", callback_data="menu_nextwar"),
+         InlineKeyboardButton("🏆 ЛВК · раунды", callback_data="menu_cwl")],
+        [InlineKeyboardButton("📈 Повышения", callback_data="staff:promotion"),
+         InlineKeyboardButton("⚠️ Дисциплина", callback_data="staff:kick")],
+        [InlineKeyboardButton("🎖 Бонусы CWL", callback_data="staff:bonus"),
+         InlineKeyboardButton("📊 Отчёт", callback_data="menu_captain")],
+        [InlineKeyboardButton("⚖️ Веса", callback_data="menu_weights"),
+         InlineKeyboardButton("👥 Привязки", callback_data="menu_accounts")],
+        [InlineKeyboardButton("🏠 Штаб", callback_data="menu_home")],
+    ]
+    await send_or_edit_message(
+        update,
+        "🛡️ <b>Кабинет руководства CoC</b>\n"
+        "Права определяются по максимальному званию среди всех твоих "
+        "подтверждённых игровых аккаунтов. Админ Telegram не требуется.\n\n"
+        "<b>Команды:</b> /setweight war quality 40 · /lastseen #ТЕГ 3 · "
+        "/adminunlink #ТЕГ · /captain\n"
+        "Кики, повышения и бонусы выполняются в игре вручную.",
+        parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+async def staff_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.callback_query:
+        return
+    await update.callback_query.answer()
+    if not await has_captain_access(update, context):
+        await send_or_edit_message(update, "Недостаточно прав CoC.")
+        return
+    stage = (update.callback_query.data or "staff:kick").split(":")[1]
+    mode = "cwl" if stage == "bonus" else context.user_data.get("lineup_mode", "war")
+    data = context.user_data.get("lineup_snapshot")
+    if not data or data.get("mode") != mode:
+        context.user_data["lineup_mode"] = mode
+        await next_war_analysis(update, context)
+        return
+    stage = "promotion" if stage == "promotion" else "bonus" if stage == "bonus" else "kick"
+    await send_or_edit_message(
+        update, lineup_message(data, stage), parse_mode=ParseMode.HTML,
+        reply_markup=lineup_keyboard(stage, data=data, captain=True),
+    )
 
 
 async def captain_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1068,6 +1119,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "menu_cwl": cwl,
         "menu_progress": progress,
         "menu_captain": captain_report,
+        "menu_staff": staff,
         "menu_player": player,
         "menu_profile": player,
         "menu_accounts": accounts,
@@ -1900,6 +1952,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("cwl", cwl))
     application.add_handler(CommandHandler("progress", progress))
     application.add_handler(CommandHandler("captain", captain_report))
+    application.add_handler(CommandHandler("staff", staff))
     application.add_handler(CommandHandler("raids", clan_raids))
     application.add_handler(CommandHandler("games", clan_games))
     application.add_handler(CommandHandler("ping", ping))
@@ -1921,6 +1974,7 @@ async def main() -> None:
     application.add_handler(CallbackQueryHandler(bind_cancel, pattern="^bind_cancel$"))
     application.add_handler(CallbackQueryHandler(roster_callback, pattern=r"^pick:(manual|page|player):[0-9]+$"))
     application.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
+    application.add_handler(CallbackQueryHandler(staff_callback, pattern=r"^staff:(promotion|kick|bonus)$"))
     application.add_handler(CallbackQueryHandler(
         lineup_callback, pattern=r"^lineup:(main|bench|details|about|player|refresh|inactive|optout|needs_review|cwl_excluded|twinks|kick|promotion|bonus|weights):[0-9]+$|^lineup:mode:(war|cwl)$"
     ))
