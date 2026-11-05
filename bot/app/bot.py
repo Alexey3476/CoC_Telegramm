@@ -30,6 +30,8 @@ from app.ui import format_war_message, format_raid_message, lineup_message, line
 from app.tags import assign_game_tag, sync_tags_daily
 from app.binding_ui import sorted_roster, roster_keyboard, available_roster
 from app.captain import is_captain, captain_report_text
+from app.profile_ui import (profile_text, profile_keyboard, detail_text, detail_keyboard,
+                            delete_keyboard, progress_text, progress_keyboard)
 from app.war_results import WarAnnouncementStore, classify_result, format_result, recently_finished, war_identity
 
 log_level = logging.DEBUG if settings.debug else logging.INFO
@@ -915,25 +917,109 @@ async def mytag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Unexpected error occurred. Please try again.")
 
 
-async def accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show all verified game accounts owned by one Telegram user."""
-    if not update.effective_user or not ensure_private_chat(update):
-        return
+async def _load_owned_profiles(update: Update, context: ContextTypes.DEFAULT_TYPE) -> list[dict]:
+    """Read names/stats live from CoC; never treat Telegram display name as proof."""
     storage: BindingsStorage = context.application.bot_data["storage"]
     bound = storage.get_user_accounts(settings.clan_group_id or 0, update.effective_user.id)
     if not bound:
-        await send_or_edit_message(update, "Нет привязанных аккаунтов. Добавь первый через /bind.")
-        return
+        return []
+    semaphore = asyncio.Semaphore(3)
+    async def fetch_one(account):
+        tag = account.coc_player_tag
+        async with semaphore:
+            try:
+                async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+                    result = await fetch_json(client, f"/player/{encode_tag(tag)}")
+            except (httpx.HTTPStatusError, httpx.RequestError):
+                result = {"name": tag}
+        result["tag"] = tag
+        league = result.get("leagueTier") or result.get("league") or {}
+        result["leagueName"] = league.get("name") if isinstance(league, dict) else None
+        result["isPrimary"] = False
+        return result
+    profiles = await asyncio.gather(*(fetch_one(account) for account in bound))
     primary = storage.get_binding(settings.clan_group_id or 0, update.effective_user.id)
-    rows = ["👥 <b>Мои игровые аккаунты</b>", ""]
-    for account in bound:
-        rows.append(f"• <code>{html.escape(account.coc_player_tag)}</code>" +
-                    (" ⭐ основной" if primary and primary.coc_player_tag == account.coc_player_tag else " · твинк"))
-    rows += ["", "Добавить: /bind", "Сделать основным: /primary #ТЕГ",
-             "Удалить один: /unlink #ТЕГ",
-             "Удалить все: /unbind confirm"]
-    await send_or_edit_message(update, "\n".join(rows), parse_mode=ParseMode.HTML,
-                               reply_markup=back_keyboard())
+    for profile in profiles:
+        profile["isPrimary"] = bool(primary and profile["tag"] == primary.coc_player_tag)
+    context.user_data["own_profiles"] = profiles
+    return profiles
+
+
+async def accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """A single overview is used by /accounts, /profile and 'Мой профиль'."""
+    if not update.effective_user:
+        return
+    if not ensure_private_chat(update):
+        await send_or_edit_message(update, "Личные игровые аккаунты доступны в личном чате с ботом.")
+        return
+    profiles = await _load_owned_profiles(update, context)
+    if not profiles:
+        await send_or_edit_message(
+            update, "У тебя нет привязанных игровых аккаунтов. Добавь первый через /bind.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ Привязать", callback_data="bind_start")],
+                [InlineKeyboardButton("🏠 Штаб", callback_data="menu_home")],
+            ]),
+        )
+        return
+    primary = next((p["tag"] for p in profiles if p.get("isPrimary")), None)
+    await send_or_edit_message(update, profile_text(profiles, primary),
+                               parse_mode=ParseMode.HTML,
+                               reply_markup=profile_keyboard(profiles))
+
+
+async def account_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Only verified account owner can inspect, switch or delete an account."""
+    query = update.callback_query
+    if not query or not ensure_private_chat(update) or not update.effective_user:
+        return
+    await query.answer()
+    _, action, value = (query.data or "").split(":", 2)
+    if action == "list":
+        await accounts(update, context)
+        return
+    profiles = context.user_data.get("own_profiles") or []
+    if not profiles:
+        profiles = await _load_owned_profiles(update, context)
+    try:
+        index = int(value)
+    except ValueError:
+        return
+    if not 0 <= index < len(profiles):
+        await send_or_edit_message(update, "Список устарел, открой /profile.")
+        return
+    selected = profiles[index]
+    tag = selected["tag"]
+    storage: BindingsStorage = context.application.bot_data["storage"]
+    authorized = {account.coc_player_tag for account in
+                  storage.get_user_accounts(settings.clan_group_id or 0, update.effective_user.id)}
+    if tag not in authorized:
+        await send_or_edit_message(update, "Аккаунт больше не привязан к твоему Telegram.")
+        return
+    if action == "view":
+        await send_or_edit_message(update, detail_text(selected, bool(selected.get("isPrimary"))),
+                                   parse_mode=ParseMode.HTML,
+                                   reply_markup=detail_keyboard(index, bool(selected.get("isPrimary"))))
+    elif action == "primary":
+        storage.set_primary_account(settings.clan_group_id or 0, update.effective_user.id, tag)
+        await accounts(update, context)
+    elif action == "delete":
+        await send_or_edit_message(
+            update,
+            f"🗑 Удалить привязку <b>{html.escape(str(selected.get('name') or tag))}</b>?\n"
+            "Игровой аккаунт и Telegram-группа останутся без изменений.",
+            parse_mode=ParseMode.HTML, reply_markup=delete_keyboard(index),
+        )
+    elif action == "confirm":
+        success = storage.unlink_account(settings.clan_group_id or 0, tag,
+                                         owner_id=update.effective_user.id)
+        if success:
+            await accounts(update, context)
+        else:
+            await send_or_edit_message(update, "Привязка уже удалена или принадлежит другому пользователю.")
+    elif action == "progress":
+        context.user_data["progress_index"] = index
+        await show_owned_progress(update, context)
 
 
 async def primary_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1121,7 +1207,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "menu_captain": captain_report,
         "menu_staff": staff,
         "menu_player": player,
-        "menu_profile": player,
+        "menu_profile": accounts,
         "menu_accounts": accounts,
         "menu_help": help_command,
     }
@@ -1310,11 +1396,7 @@ async def grouplink(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Open the verified linked account without duplicating formatters."""
-    if not ensure_private_chat(update):
-        return
-    context.args = []
-    await player(update, context)
+    await accounts(update, context)
 
 
 async def settings_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1974,6 +2056,7 @@ async def main() -> None:
     application.add_handler(CallbackQueryHandler(bind_cancel, pattern="^bind_cancel$"))
     application.add_handler(CallbackQueryHandler(roster_callback, pattern=r"^pick:(manual|page|player):[0-9]+$"))
     application.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
+    application.add_handler(CallbackQueryHandler(account_callback, pattern=r"^acct:(list|view|primary|delete|confirm|progress):[0-9]+$"))
     application.add_handler(CallbackQueryHandler(staff_callback, pattern=r"^staff:(promotion|kick|bonus)$"))
     application.add_handler(CallbackQueryHandler(
         lineup_callback, pattern=r"^lineup:(main|bench|details|about|player|refresh|inactive|optout|needs_review|cwl_excluded|twinks|kick|promotion|bonus|weights):[0-9]+$|^lineup:mode:(war|cwl)$"
