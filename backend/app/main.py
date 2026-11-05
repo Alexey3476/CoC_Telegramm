@@ -32,6 +32,7 @@ from app.coc_client import (
 )
 from app.settings import settings, validate_settings
 from app.war_history import WarHistory, completed_for_clan
+from app.hall import hall_of_fame
 from app.progress import ProgressStore
 from app.selection import SelectionStore
 
@@ -269,6 +270,20 @@ async def progress(tag: str, request: Request, days: int = 7):
         raise HTTPException(status_code=429, detail="Clash API rate limited") from exc
     except (RuntimeError, TimeoutError) as exc:
         raise HTTPException(status_code=502, detail="Clash API unavailable") from exc
+
+
+@app.get("/hall")
+async def hall(request: Request):
+    """Leaderboard by separate observable sources. No fictional games points."""
+    client = get_http_client(request)
+    cache = get_redis(request)
+    clan = await get_clan(client, cache)
+    try:
+        raids = await get_clan_raids(client, cache)
+    except (NotFoundError, ForbiddenError, RateLimitError, RuntimeError, TimeoutError):
+        raids = {}
+    return hall_of_fame(clan, request.app.state.history.completed(100),
+                        raids.get("currentRaid"))
 
 
 @app.get("/health")
