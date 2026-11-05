@@ -184,6 +184,15 @@ async def get_cwl_summary(client: httpx.AsyncClient, redis: TTLCache) -> dict[st
     return summarize_cwl(group, wars, normalize_tag(settings.coc_clan_tag))
 
 
+def orient_war_for_clan(war: dict[str, Any], clan_tag: str) -> dict[str, Any]:
+    """Keep our side under 'clan', even when CWL represents us as opponent."""
+    home = war.get("clan") or {}
+    away = war.get("opponent") or {}
+    if home.get("tag") != clan_tag and away.get("tag") == clan_tag:
+        return {**war, "clan": away, "opponent": home}
+    return war
+
+
 async def get_war(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
     """Regular current war, or the current CWL war when the regular endpoint is empty."""
     regular = await get_regular_war(client, redis)
@@ -193,10 +202,11 @@ async def get_war(client: httpx.AsyncClient, redis: TTLCache) -> dict[str, Any]:
     live = [war for war in wars if war.get("state") in {"preparation", "inWar"}]
     if not live:
         return regular
-    return max(
+    selected = max(
         live,
         key=lambda war: (war.get("state") == "inWar", war.get("startTime") or ""),
     )
+    return orient_war_for_clan(selected, normalize_tag(settings.coc_clan_tag))
 
 
 async def get_clan_members(client: httpx.AsyncClient, redis: TTLCache, limit: int = 50) -> dict[str, Any]:
